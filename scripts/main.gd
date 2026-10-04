@@ -1,13 +1,16 @@
 extends Node
-## OVERTHRONE prototype. You are the final boss; the hero is an AI that learns your skills.
-## The outer game is a candlelit BOARD (board.gd): the Hollow King is a piece walking the map of
-## his own life. Each region ends in a DEMON: one of his former selves. Landing there starts the arena.
-## This node builds the pixelated 3D hall and the board, the HUDs and the Throne interlude, and drives:
-##   hero intro -> fight -> hero falls -> Throne (gacha / loadout / ascension / eternity) -> next fight
-##   ... until the hero conquers you:
+## OVERTHRONE. You are the final boss; the hero is an AI that learns your skills.
+## Seven days in the city of Vael (overworld.gd), and six nights at the corner table of the Hollow
+## Flagon, where a man in white plays the BOARD (board.gd) with you: the Hollow King is a piece
+## walking the map of his own life. Each region ends in a CHALLENGER: one of his former selves.
+## This node builds the pixelated 3D hall, the board and the city, the HUDs and the Throne, and drives:
+##   title -> DAY (walk Vael) -> DUSK (the Stranger comes) -> NIGHT: the board, with his line
+##   -> challenger -> fights, with the Throne between his deaths, until he conquers you:
 ##     0 stars  -> TRY AGAIN from the last checkpoint (every 3 fights)
-##     1+ stars -> PRESTIGE: Crowns, Eternity upgrades, and the next, tougher hero
-##   ... after the last hero -> ending (Crowns and Eternity carry into the next cycle).
+##     1+ stars -> PRESTIGE -> MEMORY restored -> you WAKE -> Remembrance -> the next day
+##   ... night 7: no board. The final fight is against the Stranger himself -> the ending.
+## Combat runs on 0.25s ticks (GameState.TICK): each tick, boss.on_tick_begin -> hero.on_tick
+## -> bolts land -> boss.on_tick_end.
 ##
 ## Command-line (after `--`): --autoplay  bot plays the boss (for testing)
 ##                            --fast      run at 4x speed
@@ -26,6 +29,8 @@ const ZoneScript := preload("res://scripts/attacks/zone.gd")
 const BoardScript := preload("res://scripts/board.gd")
 const Story := preload("res://scripts/story.gd")
 const SlamScript := preload("res://scripts/attacks/slam.gd")
+const OverworldScript := preload("res://scripts/overworld.gd")
+const Dialogue := preload("res://scripts/dialogue.gd")
 const ATTACKS := {
 	"fireball": preload("res://scripts/attacks/fireball.gd"),
 	"volley": preload("res://scripts/attacks/fireball.gd"),
@@ -76,6 +81,9 @@ var view_container: SubViewportContainer
 var sub_viewport: SubViewport
 var world: Node3D
 var env: Environment
+var world_env: WorldEnvironment
+var ow  # the city of Vael (by day)
+var tick_acc := 0.0
 var lights: Array = []  # [light, base_energy, flickers]
 var darkness := 0.0
 var darkness_target := 0.0
@@ -142,6 +150,14 @@ var rem_after: Callable
 # Autoplay
 var auto_t := 0.0
 
+# Nights and the last night
+var night_shown := -1          # the night whose Stranger card has been shown
+var fog_revealed := 0          # board regions whose fog has rolled back
+var final_fight := false
+var final_phase := 0
+var final_bonus := 1.0
+var final_forgot := false
+
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -163,8 +179,37 @@ func _ready() -> void:
 	overlay_layer = CanvasLayer.new()
 	overlay_layer.layer = 5
 	add_child(overlay_layer)
+	_build_overworld()
+	for a in args:
+		if a.begins_with("--level="):
+			# Debug: start previews on a later day (memories restored up to it).
+			GameState.level = int(a.trim_prefix("--level="))
+			for c in GameState.level - 1:
+				GameState.memories.append(str(c))
+			GameState.revealed = GameState.level > 5
+			boss.apply_purity(GameState.purity())
+	for a in args:
+		if a.begins_with("--shot="):
+			# Debug: save a screenshot after a few seconds, then quit (--shot-delay=N to change when).
+			var delay := 6.0
+			for b in args:
+				if b.begins_with("--shot-delay="):
+					delay = float(b.trim_prefix("--shot-delay="))
+			get_tree().create_timer(delay, true, false, true).timeout.connect(func():
+				get_viewport().get_texture().get_image().save_png(a.trim_prefix("--shot="))
+				get_tree().quit())
+	if args.has("--preview-day"):
+		_enter_day()
+		return
+	if args.has("--preview-final"):
+		GameState.level = GameState.max_level() + 1
+		GameState.memories.assign(["0", "1", "2", "3", "4", "5"])
+		GameState.owned = {"fireball": 4, "slam": 4, "spikes": 4, "lance": 3}
+		GameState.loadout.assign(["fireball", "slam", "spikes", "lance"])
+		_show_final_intro()
+		return
 	if args.has("--preview-board"):
-		GameState.board_tile = 2
+		GameState.board_tile = 2 + 5 * (GameState.level - 1)
 		_enter_board()
 		return
 	if args.has("--pure"):
@@ -261,6 +306,7 @@ func _build_world() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	world.add_child(we)
+	world_env = we
 
 	var moon := DirectionalLight3D.new()
 	moon.rotation_degrees = Vector3(-60, 25, 0)
@@ -411,10 +457,10 @@ func _start_attempt() -> void:
 	boss_hp = boss_max
 	boss.reset_cooldowns()
 	boss.select(0)
-	if GameState.checkpoint.is_empty() or (GameState.is_checkpoint_attempt() and GameState.checkpoint_attempt() != GameState.attempt):
+	if not final_fight and (GameState.checkpoint.is_empty() or (GameState.is_checkpoint_attempt() and GameState.checkpoint_attempt() != GameState.attempt)):
 		GameState.save_checkpoint()
 
-	var st := GameState.hero_stats()
+	var st := GameState.hero_stats() if not final_fight else _stranger_stats()
 	hero = HeroScript.new()
 	hero.game = self
 	hero.max_hp = st["hp"]
@@ -427,21 +473,31 @@ func _start_attempt() -> void:
 	hero.form = st["form"]
 	# He rises above you: bigger with every return, brighter, and later he descends through light.
 	hero.hero_scale = st["scale"] * (1.0 + minf(0.25, 0.03 * (GameState.attempt - 1)))
-	hero.tier = GameState.level
-	hero.power = (GameState.level - 1) * 0.8 + (GameState.attempt - 1) * 0.35
+	hero.tier = mini(GameState.level, 6)
+	hero.power = (mini(GameState.level, 6) - 1) * 0.8 + (GameState.attempt - 1) * 0.35
 	hero.descend = GameState.attempt > 1 or GameState.level >= 4
 	hero.position = Vector3(randf_range(-2.0, 2.0), 0, -13.5 if not hero.descend else -11.0)
+	if final_fight:
+		_arm_stranger(hero)
 	world.add_child(hero)
 	hero.died.connect(_on_hero_died)
 	hero.struck_boss.connect(_on_hero_struck)
 
 	_rebuild_hud_rows()
 	boss.apply_purity(GameState.purity())
+	_set_daylight(false)
 	_use_board_camera(false)
 	board_hud.visible = false
 	hud.visible = true
+	star_bar.visible = not final_fight
 	state = "fight"
+	tick_acc = 0.0
+	auto_parry_done = false
 	_capture_mouse()
+	if final_fight:
+		show_message("THE STRANGER", "\"Let's see if you can surprise yourself.\"", 3.0)
+		print("[FINAL] stranger hp %d strike %.1f style %s" % [int(st["hp"]), st["strike"], GameState.playstyle()])
+		return
 	var title: String = GameState.hero_data()["title"]
 	var cp := "   ·   CHECKPOINT SAVED" if GameState.checkpoint_attempt() == GameState.attempt and GameState.attempt > 1 else ""
 	if GameState.attempt == 1 and GameState.level == 1:
@@ -473,11 +529,19 @@ func can_cast() -> bool:
 func spawn_attack(id: String) -> bool:
 	if not can_cast() or not is_instance_valid(hero) or hero.dead:
 		return false
-	var dmg := GameState.damage_for(id)
+	var dmg := GameState.damage_for(id) * final_bonus
 	GameState.cast_count += 1
 	if GameState.perks.has("surge") and GameState.cast_count % 5 == 0:
-		dmg *= 2.0
+		dmg *= 1.0 + GameState.asc_mult()
 		popup_text(boss.hand_tip() + Vector3(0, 0.4, -1.0), "SURGE", Color(1.0, 0.85, 0.4), 1.0)
+	# The Stranger turns every few of your casts back on you (if you live by your skills).
+	if hero.mirror_every > 0 and GameState.cast_count % hero.mirror_every == 0:
+		popup_text(hero.center() + Vector3(0, 1.0, 0), "MIRRORED", Color(0.8, 0.3, 1.0), 1.2)
+		spawn_burst(hero.center(), Color(0.8, 0.3, 1.0), 20)
+		Sfx.play("parry", -4.0, 0.6)
+		_take_blow(dmg * 0.4, false)
+		tutorial("mirror", "He turned your own spell back on you. He reflects every few casts: mix in parries and leans, not just skills.")
+		return true
 	tut_casts += 1
 	if tut_casts == 4:
 		tutorial("select", "Press 1-4 (or scroll) to switch skills. Each one is countered differently, and he learns each separately.")
@@ -644,6 +708,10 @@ func _take_blow(dmg: float, melee: bool) -> void:
 	if state != "fight":
 		return
 	var parried: bool = boss.is_parrying()
+	if parried and melee and is_instance_valid(hero) and hero.unparryable:
+		parried = false
+		popup_text(Vector3(0, 2.0, -1.6), "UNPARRYABLE", Color(0.8, 0.3, 1.0), 1.2)
+		tutorial("violet", "A VIOLET blade cannot be parried. LEAN out of it with A / D.")
 	if parried:
 		dmg *= GameState.parry_taken()
 		GameState.on_parry()
@@ -670,6 +738,9 @@ func _take_blow(dmg: float, melee: bool) -> void:
 func _on_hero_died() -> void:
 	if state != "fight":
 		return
+	if final_fight:
+		_final_won()
+		return
 	state = "hero_fallen"
 	Sfx.play("death")
 	GameState.on_hero_death()
@@ -685,6 +756,9 @@ func _on_boss_defeated() -> void:
 	GameState.eclipse_active = false
 	set_darkness(false)
 	hero.celebrate()
+	if final_fight:
+		_final_lost()
+		return
 	GameState.on_boss_defeated(not hero.took_damage)
 	hurt_overlay.color.a = 0.8
 	Sfx.play("slam", 4.0, 0.6)
@@ -718,7 +792,7 @@ func _input(event: InputEvent) -> void:
 		elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			_board_advance()
 		return
-	if state == "fight" and not get_tree().paused:
+	if state == "fight" and not get_tree().paused and not is_instance_valid(overlay):
 		if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			boss.look(event.relative)
 		elif event is InputEventMouseButton and event.pressed:
@@ -779,11 +853,33 @@ func _process(delta: float) -> void:
 			auto_lean_t -= delta
 			lean = auto_lean_dir
 	boss.lean_input = lean
+	# The combat clock.
+	if state == "fight" and not get_tree().paused:
+		tick_acc += delta
+		while tick_acc >= GameState.TICK and state == "fight":
+			tick_acc -= GameState.TICK
+			_fight_tick()
+		if final_fight and state == "fight" and is_instance_valid(hero) and not hero.dead:
+			if final_phase == 0 and hero.hp < hero.max_hp * 0.66:
+				_final_phase_card()
+			elif final_phase == 1 and hero.hp < hero.max_hp * 0.33:
+				_final_phase_card()
 	if state == "board" and GameState.autoplay and not is_instance_valid(overlay):
 		auto_t -= delta
 		if auto_t <= 0.0:
 			auto_t = 0.7
 			_board_advance()
+
+
+## One combat tick: your queued cast/parry, his thinking, holy bolts landing, then cooldowns.
+func _fight_tick() -> void:
+	boss.on_tick_begin()
+	if state == "fight" and is_instance_valid(hero) and not hero.dead:
+		hero.on_tick()
+	for b in get_tree().get_nodes_in_group("hero_bolts"):
+		if b.arrived and state == "fight":
+			b.resolve()
+	boss.on_tick_end()
 
 
 func _autoplay_fight(delta: float) -> void:
@@ -808,21 +904,24 @@ func _autoplay_fight(delta: float) -> void:
 		boss.try_cast(id)
 
 
-## Bot parries most blows: just before his swing lands, or as a holy bolt arrives.
+## Bot parries most blows: queued on the tick before his swing lands (his countdown reads 1),
+## or as a holy bolt arrives. A violet (unparryable) blade it leans out of instead.
 func _autoplay_parry() -> void:
 	var due := false
-	var wt: float = hero.windup_time * (0.5 if hero.short_windup else 1.0)
-	if hero.state == "windup" and hero.state_t > wt - 0.12:
+	if hero.state == "windup" and hero.windup_ticks - hero.state_ticks <= 1:
 		due = true
-	elif hero.state == "leap" and hero.state_t > hero.LEAP_TIME - 0.12:
+	elif hero.state == "leap" and hero.state_t > hero.LEAP_TIME - GameState.TICK:
 		due = true
 	for b in get_tree().get_nodes_in_group("hero_bolts"):
-		if (b.target - b.global_position).length() < 1.6:
+		if b.ticks_left() <= 0:
 			due = true
 	if due and not auto_parry_done:
 		auto_parry_done = true
 		var r := randf()
-		if r < 0.5:
+		if hero.state == "windup" and hero.unparryable_next():
+			auto_lean_dir = 1.0 if boss_x() < 0.5 else -1.0
+			auto_lean_t = 0.6
+		elif r < 0.5:
 			boss.try_parry()
 		elif r < 0.75 and hero.state == "windup":
 			# Lean out of the way instead.
@@ -1075,7 +1174,7 @@ func _update_hud() -> void:
 	level_label.text = "CHAPTER %d / %d  ·  CROWNS %d" % [GameState.level, GameState.max_level(), GameState.crowns]
 	dread_label.text = "%d" % int(GameState.dread)
 	if is_instance_valid(hero):
-		hero_title.text = "%s  ·  FIGHT %d" % [L["title"], GameState.attempt]
+		hero_title.text = "THE STRANGER  ·  THE LAST NIGHT" if final_fight else "%s  ·  FIGHT %d" % [L["title"], GameState.attempt]
 		hero_bar.value = hero.hp / hero.max_hp
 	boss_bar.value = boss_hp / boss_max
 	boss_label.text = "YOUR WILL  %d / %d" % [int(ceil(boss_hp)), int(boss_max)]
@@ -1188,14 +1287,17 @@ func _show_title() -> void:
 	state = "title"
 	last_chapter_shown = -1
 	_show_card("OVERTHRONE",
-		"You are the Hollow King: a carved piece on a candlelit board, and a tyrant on a throne.\n\n"
-		+ "Heroes are coming to take that throne. Each one that falls comes back, and learns. "
-		+ "Every power you use against him, he masters in about five fights.\n\n"
-		+ "Outlast them. Walk the board. Somewhere along this road is the man you used to be.",
-		"TAKE YOUR PLACE ON THE BOARD", _enter_board)
+		"You are the Hollow King: a tyrant the city of Vael is terrified of.\n\n"
+		+ "By day you walk its streets. By night, at the corner table of the Hollow Flagon, a man in white "
+		+ "plays a board game with you: the map of your own life. At the end of every road a hero comes to take "
+		+ "your throne. Each one that falls comes back, and learns.\n\n"
+		+ "Seven days. Six nights. Somewhere in all of it is the man you used to be.",
+		"WAKE", _show_wake)
 
 
 func _show_level_intro() -> void:
+	if state == "intro":
+		return  # already shown (the landing timer and a board click can both ask)
 	state = "intro"
 	var H: Dictionary = GameState.hero_data()
 	var moves: Array[String] = []
@@ -1239,30 +1341,225 @@ func _after_prestige() -> void:
 	var chapter := GameState.level - 1
 	var ch: Dictionary = Story.CHAPTERS[chapter]
 	GameState.restore_memory(chapter, ch["relic"])
-	if GameState.is_final_hero():
-		GameState.crowns += GameState.last_crowns_total
-		GameState.runs_completed += 1
-	else:
-		GameState.prestige()
+	GameState.prestige()
 	var relic: Dictionary = GameState.RELICS[ch["relic"]]
 	var body: String = ch["memory"] + "\n\nRELIC RESTORED: %s  (%s)" % [relic["name"].to_upper(), relic["desc"]]
-	if not GameState.is_final_hero() or GameState.level - 1 > chapter:
-		var nxt: Dictionary = Story.CHAPTERS[mini(chapter + 1, Story.CHAPTERS.size() - 1)]
-		body += "\n\nTHE ROAD TO %s OPENS." % nxt["region"]
+	if chapter + 1 < Story.CHAPTERS.size():
+		body += "\n\nTHE ROAD TO %s OPENS." % Story.CHAPTERS[chapter + 1]["region"]
+	else:
+		body += "\n\nEvery name is remembered. Across the table, the Stranger has stopped smiling."
 	Sfx.play("reveal")
-	var last := chapter >= GameState.max_level() - 1
-	_show_card("MEMORY RESTORED: " + str(ch["memory_title"]), body, "SEE THE ENDING" if last else "RETURN TO THE BOARD",
-		_show_ending if last else _return_after_memory)
+	_show_card("MEMORY RESTORED: " + str(ch["memory_title"]), body, "SLEEP", _show_wake)
 
 
-func _return_after_memory() -> void:
-	_show_remembrance(_reveal_next_region)
+# =============================================================================
+# Days and nights: wake in Vael, walk it until dusk, then the Stranger and the board
+# =============================================================================
+
+func _build_overworld() -> void:
+	ow = OverworldScript.new()
+	ow.game = self
+	world.add_child(ow)
+	ow.position = Vector3(0, 0, 600)
+	ow.dusk_met.connect(_on_dusk_met)
 
 
-func _reveal_next_region() -> void:
+## By day the arena's lights go dark and Vael's own sun and sky take over.
+func _set_daylight(on: bool) -> void:
+	for entry in lights:
+		(entry[0] as Light3D).visible = not on
+	world_env.environment = ow.env if on else env
+	if on != ow.active:
+		ow.set_active(on)
+
+
+func _show_wake() -> void:
+	state = "wake"
+	hud.visible = false
+	board_hud.visible = false
+	var w: Array = Dialogue.WAKE[clampi(GameState.level - 1, 0, Dialogue.WAKE.size() - 1)]
+	var body: String = w[1]
+	if GameState.level == 1:
+		body += "\n\nYou do not remember how you got here. You do remember the crown. It is still on your head."
+	elif GameState.is_final_night():
+		body += "\n\nThe last day. Tonight there will be no board."
+	_show_card("DAY %d" % GameState.level, body, "RISE", func(): _show_remembrance(_enter_day))
+
+
+func _enter_day() -> void:
+	state = "day"
+	_clear_overlay()
+	hud.visible = false
+	board_hud.visible = false
+	_set_daylight(true)
+	ow.begin_day()
+	_capture_mouse()
+	print("[DAY] %d begins, dread %d, deeds %d, weapon %s" % [GameState.level, int(GameState.dread), GameState.deeds.size(), GameState.weapon])
+
+
+## The Stranger has reached you at dusk.
+func _on_dusk_met() -> void:
+	if state != "day":
+		return
+	print("[DUSK] day %d over, deeds %d, dread %d" % [GameState.level, GameState.deeds.size(), int(GameState.dread)])
+	if GameState.is_final_night():
+		_set_daylight(false)
+		_show_final_intro()
+		return
+	state = "dusk"
+	var line: Array = Dialogue.STRANGER_NIGHT[clampi(GameState.level - 1, 0, Dialogue.STRANGER_NIGHT.size() - 1)]
+	_show_card("THE HOLLOW FLAGON · NIGHT %d" % GameState.level, "%s\n\n%s" % [line[0], line[1]], "SIT DOWN", _enter_night)
+
+
+func _enter_night() -> void:
+	_set_daylight(false)
+	if GameState.level == 5 and not GameState.revealed:
+		GameState.revealed = true
+		board.refresh()
+		Sfx.play("reveal", 0.0, 0.7)
+		_show_card("HE LOWERS HIS HOOD", Dialogue.REVEAL, "PLAY", _enter_night)
+		return
+	night_shown = GameState.level
 	_enter_board()
-	board.reveal_chapter(GameState.level - 1)
-	narrate("The fog thins. I remember a little more. My hands feel... cleaner.")
+	board.peek_stranger()
+	if GameState.level - 1 > fog_revealed:
+		fog_revealed = GameState.level - 1
+		board.reveal_chapter(GameState.level - 1)
+		narrate("The fog thins. I remember a little more. My hands feel... cleaner.")
+	tutorial("stranger", "Each night you play the board against the Stranger. Your piece walks the road of your life; at its end, a challenger waits.")
+
+
+# =============================================================================
+# The last night: no board. The Stranger has watched every move you made all week.
+# =============================================================================
+
+func _show_final_intro() -> void:
+	state = "final_intro"
+	hud.visible = false
+	board_hud.visible = false
+	var line: Array = Dialogue.STRANGER_NIGHT[Dialogue.STRANGER_NIGHT.size() - 1]
+	var ps := GameState.playstyle()
+	var fav := GameState.favorite_skill()
+	var read: String = {
+		"parry": "You raise your guard on the beat, every time. Every third blow of his will burn violet: it cannot be parried.",
+		"lean": "You lean out of everything. His blade will follow you wherever you lean.",
+		"caster": "You live by your skills. %s will not touch him, he blinks out of what you throw, and every fifth spell comes back at you." % str(GameState.SKILLS[fav]["name"]) if fav != "" else "You live by your skills.",
+	}[ps]
+	var heart := ""
+	if GameState.kindness > GameState.cruelty + 2:
+		heart = "\n\n\"You paid when they were too frightened to ask. I noticed.\""
+	elif GameState.cruelty > GameState.kindness + 2:
+		heart = "\n\n\"You took their coin because you could. I carried that too.\""
+	_show_card("THE LAST NIGHT", "%s\n\n%s\n\nHE HAS STUDIED YOU: %s%s" % [line[0], line[1], read, heart], "FACE HIM", _start_final)
+
+
+func _start_final() -> void:
+	final_fight = true
+	final_phase = 0
+	final_bonus = 1.0
+	final_forgot = false
+	GameState.attempt = 1
+	# Everything you can do, he has already seen: he knows it all well, your favorite perfectly.
+	var fav := GameState.favorite_skill()
+	for id in GameState.SKILLS:
+		GameState.fights[id] = GameState.fights_to_master() - 0.5
+	if fav != "":
+		GameState.fights[fav] = GameState.fights_to_master()
+	_start_attempt()
+
+
+func _stranger_stats() -> Dictionary:
+	var c := GameState.stranger_corruption()
+	return {
+		"hp": 700.0 + 40.0 * GameState.deeds.size(),
+		"strike": 30.0,
+		"speed": 4.4,
+		"windup": 0.42,
+		"armor": Color(0.15, 0.1, 0.18),
+		"cape": Color(0.94, 0.93, 0.9).lerp(Color(0.08, 0.06, 0.1), c),
+		"form": 4,
+		"scale": 1.2,
+	}
+
+
+## His counters are built from how you fought all week (GameState.playstyle).
+func _arm_stranger(h) -> void:
+	h.stranger = true
+	h.descend = true
+	match GameState.playstyle():
+		"parry":
+			h.unparryable_every = 3
+		"lean":
+			h.always_track = true
+		_:
+			h.nullify_skill = GameState.favorite_skill()
+			h.mirror_every = 5
+			h.blink = true
+
+
+## At 66% and 33% of his life the fight stops, and you choose what to become.
+func _final_phase_card() -> void:
+	final_phase += 1
+	get_tree().paused = true
+	var fav := GameState.favorite_skill()
+	var opts: Array = []
+	if not final_forgot and fav != "":
+		opts.append(["LET HIM FORGET: he loses all he knows of %s" % str(GameState.SKILLS[fav]["name"]).to_upper(), _final_choice.bind("forget")])
+	else:
+		opts.append(["LET HIM FORGET: everything he knows of you is halved", _final_choice.bind("forget_all")])
+	opts.append(["REMEMBER WHO YOU WERE: restore half your Will", _final_choice.bind("will")])
+	opts.append(["BECOME SOMEONE NEW: your skills deal +35% damage tonight", _final_choice.bind("power")])
+	var line := "\"You're better than you think. Worse, too.\" He staggers, and smiles." if final_phase == 1 else "\"There it is. That's the man I've been carrying all week.\""
+	_show_choice("THE STRANGER FALTERS", line, "", opts)
+
+
+func _final_choice(kind: String) -> void:
+	match kind:
+		"forget":
+			var fav := GameState.favorite_skill()
+			GameState.fights[fav] = 0.0
+			GameState.temp.erase(fav)
+			final_forgot = true
+			if is_instance_valid(hero):
+				if hero.nullify_skill == fav:
+					hero.nullify_skill = ""
+				hero.refresh_sigils()
+		"forget_all":
+			for id in GameState.fights:
+				GameState.fights[id] *= 0.5
+			if is_instance_valid(hero):
+				hero.refresh_sigils()
+		"will":
+			boss_hp = minf(boss_max, boss_hp + boss_max * 0.5)
+		"power":
+			final_bonus += 0.35
+	print("[FINAL] phase %d choice %s" % [final_phase, kind])
+	get_tree().paused = false
+	_clear_overlay()
+	_capture_mouse()
+
+
+func _final_won() -> void:
+	state = "ending"
+	final_fight = false
+	Sfx.play("death")
+	for n in get_tree().get_nodes_in_group("attacks"):
+		n.queue_free()
+	print("[FINAL] won")
+	show_message("HE KNEELS", "", 2.4)
+	get_tree().create_timer(2.6).timeout.connect(func():
+		_show_card("HE KNEELS",
+			"The Stranger goes down on one knee, and laughs, and for once it is not a sad sound.\n\n"
+			+ "\"There you are.\" He takes your hands. The rot runs out of his and does not come back into yours. "
+			+ "It simply ends.\n\nThen there is only one of you, and you are not alone in your skin any more.",
+			"STAND UP", _show_ending))
+
+
+func _final_lost() -> void:
+	print("[FINAL] lost")
+	show_message("HE KNOWS YOU TOO WELL", "", 2.4)
+	get_tree().create_timer(2.8).timeout.connect(func():
+		_show_card("HE KNOWS YOU TOO WELL", "\"Again. You can do better than you. I've seen it.\"\n\nHe resets the night. Everything he learned, he keeps.", "AGAIN", _start_final, BLOOD))
 
 
 func _show_ending() -> void:
@@ -1271,12 +1568,15 @@ func _show_ending() -> void:
 	var body: String = Story.ENDING
 	body += "\n\nYou carry %d Crowns, every unlocked class and every Eternity upgrade into the next cycle." % GameState.crowns
 	body += "\n\n— END OF CHAPTER ONE —"
+	GameState.runs_completed += 1
 	print("[ENDING] crowns=%d total deaths=%d" % [GameState.crowns, GameState.total_deaths])
 	_show_card("THE KING IS WHOLE", body, "BEGIN A NEW CYCLE", func():
 		if quit_at_end:
 			get_tree().quit()
 			return
 		GameState.reset_run()
+		night_shown = -1
+		fog_revealed = 0
 		_show_title())
 
 
@@ -1388,9 +1688,9 @@ func _enter_board() -> void:
 	_update_board_hud()
 	boss.apply_purity(GameState.purity())
 	if GameState.board_tile < 0 and last_chapter_shown < 0:
-		narrate("I am the Hollow King. This board is my life. Somewhere on it, I lost myself.")
+		narrate("\"Your move,\" he says. This board is my life. Somewhere on it, I lost myself.")
 		_chapter_banner(0)
-	tutorial("board", "This is your journey. SPACE or CLICK moves your piece one tile. T opens the Throne of Thought.")
+	tutorial("board", "This board is your life. SPACE or CLICK moves your piece one tile. T opens the Throne of Thought.")
 	if GameState.memories.size() >= 1:
 		tutorial("crowns", "CROWNS are forever. Spend them in the Throne: unlock CLASSES on their sigils, and buy ETERNITY upgrades.")
 

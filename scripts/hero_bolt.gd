@@ -1,5 +1,6 @@
 extends Node3D
-## A Holy Bolt thrown by the hero at your face. Parry it as it arrives.
+## A Holy Bolt thrown by the hero at your face. It flies continuously but only LANDS on a tick:
+## once it reaches you it hangs there, burning, until main resolves it (resolve()). Parry on that beat.
 
 const Fx := preload("res://scripts/fx.gd")
 
@@ -8,6 +9,7 @@ var damage := 10.0
 var target := Vector3(0, 2.3, 0.4)
 var speed := 11.0
 var done := false
+var arrived := false
 
 
 func _ready() -> void:
@@ -28,8 +30,21 @@ func _physics_process(delta: float) -> void:
 		return
 	var to := target - global_position
 	if to.length() < 0.6:
-		done = true
-		game.on_hero_struck_ranged(damage, target)
-		queue_free()
+		arrived = true
 		return
-	global_position += to.normalized() * speed * delta
+	global_position += to.normalized() * minf(speed * delta, to.length() - 0.5)
+
+
+## Ticks until it lands (0 = it lands on the next tick). Used by autoplay to time a parry.
+func ticks_left() -> int:
+	if arrived:
+		return 0
+	return int((target - global_position).length() / (speed * GameState.TICK))
+
+
+func resolve() -> void:
+	if done:
+		return
+	done = true
+	game.on_hero_struck_ranged(damage, target)
+	queue_free()

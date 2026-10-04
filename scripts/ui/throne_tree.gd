@@ -769,9 +769,9 @@ func _tooltip_lines(n: Dictionary) -> Array:
 			var p: Dictionary = GameState.PERKS[id]
 			var owned := GameState.perks.has(id)
 			out.append(_ln(p["name"], GOLD if owned else TEXT, 24))
-			for w in _wrap(p["desc"]):
+			for w in _wrap(GameState.perk_desc(id)):
 				out.append(_ln(w, TEXT))
-			out.append(_ln("KEPT FOREVER IN THIS RUN", MUTED))
+			out.append(_ln("LASTS UNTIL DAWN · 10% STRONGER EACH NIGHT", MUTED))
 			if owned:
 				out.append(_ln("✓ CLAIMED", Color("8ad08a")))
 			elif not GameState.perk_available(id):

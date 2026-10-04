@@ -45,8 +45,7 @@ func _draw() -> void:
 			continue
 		draw_texture_rect(UiArt.icon(id), Rect2(cx - 18, cy - 18, 36, 36), false, Color.WHITE if ready else Color(0.4, 0.35, 0.45))
 		if not ready:
-			var frac := clampf(left / GameState.cooldown_for(id), 0.0, 1.0)
-			_drain(cx, cy + half + 3, frac)
+			_drain(cx, cy + half + 3, boss.cooldown_frac(id))
 			_str(Vector2(cx - 30, cy - 7), "%.1f" % left, 16, Color.WHITE, 60)
 
 	# Parry

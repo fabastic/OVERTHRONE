@@ -3,6 +3,8 @@ extends Node3D
 ## The King is a carved piece. The path snakes across six regions, one per chapter of his past.
 ## Regions beyond the next demon lie under fog. Landing on a tile emits `arrived`; main.gd
 ## resolves it (story, event, treasure, altar, or the DEMON fight).
+## The table is the corner table of the Hollow Flagon: tankards, a lantern, and across from you,
+## seated, the Stranger (stranger.gd), playing the other side.
 
 signal arrived(tile: Dictionary)
 
@@ -10,6 +12,7 @@ const Story := preload("res://scripts/story.gd")
 const Fx := preload("res://scripts/fx.gd")
 const HeroScript := preload("res://scripts/hero.gd")
 const UiArt := preload("res://scripts/ui/ui_art.gd")
+const StrangerScript := preload("res://scripts/stranger.gd")
 const ROW_GAP := 2.7
 const COL_GAP := 2.1
 const START := Vector3(-4.2, 0, 2.6)
@@ -28,6 +31,7 @@ var hop_to := Vector3.ZERO
 var hop_target := -1
 var cam_focus := Vector3.ZERO
 var t := 0.0
+var stranger
 
 
 func _ready() -> void:
@@ -38,6 +42,7 @@ func _ready() -> void:
 	for c in Story.CHAPTERS.size():
 		_build_region(c)
 	_build_piece()
+	_build_tavern()
 	cam = Camera3D.new()
 	cam.fov = 48.0
 	cam.far = 60.0
@@ -278,6 +283,51 @@ func _build_piece() -> void:
 	piece.add_child(aura)
 
 
+## The Hollow Flagon around the board: the Stranger seated across the table, tankards, a lantern,
+## and the dark of the tavern behind him.
+func _build_tavern() -> void:
+	stranger = StrangerScript.new()
+	stranger.seated = true
+	add_child(stranger)
+	stranger.scale = Vector3.ONE * 5.0
+	stranger.position = Vector3(0, -3.9, -18.6)
+	stranger.rotation.y = PI  # facing you, down the table
+	var pewter := Fx.mat(Color(0.55, 0.55, 0.6))
+	var ale := Fx.mat(Color(0.75, 0.5, 0.15), 0.4)
+	for tp in [Vector3(-8.0, 0, -12.0), Vector3(8.6, 0, -10.0), Vector3(-7.6, 0, 1.8)]:
+		add_child(Fx.cylinder(0.45, 0.45, 1.2, pewter, tp + Vector3(0, 0.5, 0)))
+		add_child(Fx.cylinder(0.38, 0.38, 0.05, ale, tp + Vector3(0, 1.08, 0)))
+		var handle := Fx.box(Vector3(0.15, 0.7, 0.15), pewter, tp + Vector3(0.6, 0.55, 0))
+		add_child(handle)
+	# A lantern on his side of the table
+	add_child(Fx.box(Vector3(0.8, 1.3, 0.8), Fx.mat(Color(0.15, 0.12, 0.1)), Vector3(5.5, 0.55, -14.5)))
+	add_child(Fx.box(Vector3(0.55, 0.8, 0.55), Fx.mat(Color(1.0, 0.75, 0.4), 4.0), Vector3(5.5, 0.6, -14.5)))
+	var ll := OmniLight3D.new()
+	ll.light_color = Color(1.0, 0.7, 0.4)
+	ll.omni_range = 9.0
+	ll.light_energy = 1.4
+	ll.position = Vector3(5.5, 1.6, -14.5)
+	add_child(ll)
+	# The tavern behind him: a back wall, a shelf of bottles, a hearth glow.
+	var wallm := Fx.textured(Fx.stone_texture(Color(0.22, 0.15, 0.1), Color(0.18, 0.12, 0.08), 32, 4, true), Vector3(8, 3, 1))
+	add_child(Fx.box(Vector3(40, 16, 1), wallm, Vector3(0, 2.0, -27)))
+	add_child(Fx.box(Vector3(10, 0.3, 1.2), Fx.mat(Color(0.3, 0.2, 0.12)), Vector3(-9, 5.0, -26.2)))
+	for k in 8:
+		add_child(Fx.cylinder(0.18, 0.22, 0.9, Fx.mat([Color(0.2, 0.5, 0.25), Color(0.5, 0.2, 0.15), Color(0.3, 0.3, 0.55)][k % 3], 0.3), Vector3(-13 + k * 1.1, 5.6, -26.2)))
+	var hearth := OmniLight3D.new()
+	hearth.light_color = Color(1.0, 0.45, 0.2)
+	hearth.omni_range = 14.0
+	hearth.light_energy = 1.6
+	hearth.position = Vector3(12, 1.0, -24)
+	add_child(hearth)
+	candle_lights.append(hearth)
+
+
+## On a new night, the camera starts on him and drifts back to your piece.
+func peek_stranger() -> void:
+	cam_focus = Vector3(0, 0, -12.5)
+
+
 # =============================================================================
 # State
 # =============================================================================
@@ -314,6 +364,8 @@ func refresh() -> void:
 	for c in fog.size():
 		(fog[c] as Node3D).visible = c > GameState.level - 1
 		(signs[c] as Label3D).visible = c <= GameState.level  # this region and the next
+	if stranger:
+		stranger.refresh()
 	for g in gem_root.get_children():
 		g.queue_free()
 	var gem_cols := [Color(0.9, 0.3, 0.2), Color(0.3, 0.5, 1.0), Color(1.0, 0.8, 0.2), Color(0.9, 0.9, 1.0), Color(0.5, 0.9, 1.0), Color(1.0, 0.6, 0.3)]

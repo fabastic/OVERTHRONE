@@ -271,8 +271,8 @@ func _draw() -> void:
 		draw_rect(Rect2(_scr(Vector2(0 + slide, by - 4)), Vector2(W, 1) * S), gold)
 		draw_rect(Rect2(_scr(Vector2(0 + slide, by + 29)), Vector2(W, 1) * S), gold)
 		if is_final:
-			_text_c(by, "THE LAST HERO HAS RISEN BEYOND YOU", 24, Color("fff0d0"), 213 + slide)
-			_text_c(by + 12, "THE DREAM IS ENDING", 16, gold, 213 + slide)
+			_text_c(by, "THE LAST OF YOUR PAST SELVES IS REMEMBERED", 24, Color("fff0d0"), 213 + slide)
+			_text_c(by + 12, "ONE NIGHT LEFT. HE WILL NOT PLAY A GAME.", 16, gold, 213 + slide)
 		else:
 			_text_c(by, "A TOUGHER SOUL APPROACHES: %s" % next.get("title", ""), 24, Color("fff0d0"), 213 + slide)
 			var cur: Dictionary = GameState.hero_data()
@@ -283,7 +283,7 @@ func _draw() -> void:
 				if not cur["moves"].has(mv):
 					chips += " · NEW MOVE: %s" % {"lunge": "LUNGE", "bolt": "HOLY BOLT", "leap": "JUDGMENT LEAP"}.get(mv, mv)
 			_text_c(by + 11, chips, 16, gold, 213 + slide)
-			_text_c(by + 19, "HE DOES NOT KNOW YOU. YET. · DREAD AND ASCENSION RETURN TO DUST", 16, Color("c8b0a0"), 213 + slide)
+			_text_c(by + 19, "HE DOES NOT KNOW YOU. YET. · ASCENSION RETURNS TO DUST BY DAWN", 16, Color("c8b0a0"), 213 + slide)
 	if t >= _t_end():
 		var blink := 0.6 + 0.4 * sin(t * 5.0)
 		_text_c(232, "SPACE / CLICK: RECLAIM THE MEMORY ▶", 16, Color(1, 0.94, 0.8, blink))
