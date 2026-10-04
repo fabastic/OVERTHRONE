@@ -7,6 +7,7 @@ extends Node3D
 ## Used walking up to you at dusk (overworld.gd) and seated across the board at the Hollow Flagon (board.gd).
 
 const Fx := preload("res://scripts/fx.gd")
+const PixTex := preload("res://scripts/pixtex.gd")
 
 var seated := false
 var walking := false
@@ -33,9 +34,10 @@ var glow: OmniLight3D
 
 func _ready() -> void:
 	t = randf() * 5.0
-	robe_mat = Fx.mat(Color.WHITE)
+	# Pixel cloth and skin in neutral greys, tinted by refresh(): the rot shows in the colour
+	robe_mat = PixTex.mat(PixTex.cloth(Color(0.95, 0.95, 0.95), 91), 0.4, false)
 	trim_mat = Fx.mat(Color(0.85, 0.7, 0.35), 0.4)
-	skin_mat = Fx.mat(Color(0.86, 0.72, 0.6))
+	skin_mat = PixTex.mat(PixTex.grain(Color(0.95, 0.95, 0.95), 92), 0.3, false)
 	vein_mat = Fx.mat(Color(1.0, 0.1, 0.15), 2.5)
 	eye_mat = Fx.mat(Color(1.0, 0.85, 0.5), 5.0)
 	_build()

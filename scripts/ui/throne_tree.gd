@@ -762,7 +762,9 @@ func _tooltip_lines(n: Dictionary) -> Array:
 			var tr := GameState.tier(m)
 			out.append(_ln("HE KNOWS IT: %s %d%%" % [GameState.TIER_NAMES[tr], int(m * 100)], GameState.TIER_COLORS[tr]))
 			out.append({"bar": m, "c": GameState.TIER_COLORS[tr], "s": 16})
-			out.append(_ln("FACED IN %d OF %d FIGHTS TO MASTER" % [int(GameState.fights_seen(id)), int(GameState.fights_to_master())], MUTED))
+			var seen := int(GameState.fights_seen(id))
+			var need := int(GameState.fights_to_master())
+			out.append(_ln(("FACED IN %d OF %d FIGHTS TO MASTER" % [seen, need]) if seen < need else "FACED IN %d FIGHTS: HE HAS IT" % seen, MUTED))
 			out.append(_ln("HE WILL %s IT" % s["counter"] if tr >= 2 else "HE CANNOT COUNTER IT YET", GameState.TIER_COLORS[tr] if tr >= 2 else Color("8ad08a")))
 			out.append(_ln("CLICK: %s" % ("UNEQUIP" if GameState.loadout.has(id) else "EQUIP"), GOLD))
 		"perk":

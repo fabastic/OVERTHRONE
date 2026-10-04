@@ -27,7 +27,8 @@ As your hands purify, the city's fear turns to wariness, then to reverence. And 
 | LMB | Swing your blade (on the beat: one swing every few ticks, set by the weapon) |
 | Q | Cast the selected skill |
 | RMB | Parry. Foes show a red tick countdown over their heads; parry on the last beat |
-| E | Talk, open a chest, read graffiti, look in the mirror |
+| E | Talk, open a chest, examine a secret, pick up a page, look in the mirror |
+| M / TAB | The map of Vael (the world holds still while you read it) |
 | 1-5 / mouse wheel | Select skill |
 
 **At night (the arena):**
@@ -50,13 +51,19 @@ As your hands purify, the city's fear turns to wariness, then to reverence. And 
 - ENTER continues.
 - ESC leaves the Rite.
 
+In any dialogue or card, **1-9** pick a choice and **ENTER** presses the first button.
+
 ## New-player guidance
 
 A one-time **GUIDANCE** hint appears the first time each thing matters: moving on the board, events, casting, switching skills, parrying (the game briefly slows the first time his blade glows red), leaning, his death and learning, the Rite, adapting, stars, checkpoints, Crowns, and each new move a challenger brings.
 
 ## Your hands tell the story
 
-At the start they are corrupted: black-violet skin, glowing red veins, thorns, an iron shackle with a broken chain, smoke, and claws that twitch. Every memory you restore purifies them. The skin warms, the veins turn gold then white, the thorns fall away, the shackle becomes a gold bracelet, the claws become nails, and smoke becomes motes of light.
+They are built like real hands: a palm as long as the fingers, three hinged segments to every finger (middle longest, pinky set low), knuckles on an arc, a thumb rooted at the heel of the hand, tendons, creases, a signet ring on the right index finger and a pale band where a ring used to be on the left. They are held up before you, backs toward your eyes.
+
+At the start they are corrupted: grey and gaunt, the fingers 35% longer and thinner, ink-black from the fingertips up, swollen knuckles, long black claws, peeling skin, crooked joints that twitch, red cracks, thorns, an iron shackle with a broken chain, and smoke. Every memory you restore purifies them: the fingers shorten and straighten, the claws shrink back into nails, the skin warms, the veins turn gold, the shackle becomes a gold bracelet, and smoke becomes motes of light.
+
+**They move.** Every hand blends between poses: relaxed, open, clawed, a fist, a pointing finger, a sword in a hammer grip, the wand in a pencil grip, a guard with crossed wrists. Each school of magic is cast with its own gesture, and the palm glows and sparks in the spell's colour: Hellfire is an open-palm push, Bone a two-fisted slam, Rime a two-finger point, Storm a raised finger and a snap, Void a claw that clenches into a fist, Blood a palm turned up to beckon, Warlord a flat sweep, and the great spells (Eclipse, Time Rend, Falling Star, Phantom Hands) lift both hands to the sky. At rest the fingers roll and fidget, and the wand turns.
 
 ## He rises above you
 
@@ -114,8 +121,43 @@ Each has more moves of his own. All of his blows can be parried.
 - **Tone:** people fear you, then grow wary, then treat you as a saint, following your purity. Afraid, they give their services free (you may pay anyway); as a saint you get half price. You can also ask anyone about the man in white, or demand tribute. The Stranger notices how kind or cruel you were.
 - **Services:** Marta's bread (heal), Hennik's forge (six weapons, one new tier per day), Sister Ivy's blessing and Greta's ale (+Will tonight), Liore's aether tuning (+20% weapon damage, up to 3), Pip, Captain Rolan's bounty, Oswin's songs, Widow Ansel's empty grave, and Toms, who lets you wait for dusk.
 - **Loot:** 11 chests, some sealed with Dread. Graffiti on the walls, all in your handwriting.
+- **Blades:** ten weapons built as real swords (fuller, quillons, wrapped grip, pommel, glowing runes): a rusted shortsword, a falchion, a runed longsword, a Cog-Axe, a Wardensteel greatsword, the Arcbrand, a Lionfang sabre, a Phase Halberd, the Sunforged Edge, and one you have to find. You swing in a diagonal arc on the beat. Swords hang on Hennik's rack (more each day), over the Flagon's door, in the Watch armoury and over the gladiators' graves.
+- **Ambushes:** from day 2 the Crownless jump you twice a day, out of the crowd behind you.
+- **The town crier** shouts the day's news from the plaza.
 - **Tech** rises every day: aether globes replace torches (day 2), conduits light the avenues (3), lanterns float over the plaza (4), holo-banners (5), an airship (6).
 - **Dread carries over** between day and night. Ascension perks **reset every night**, and each night's perks are 10% stronger.
+
+## The Lamplighter (a story of its own)
+
+Edda has lit Vael's aether lamps for fifty years, and every night now lamps go dark: the **Crownless**, a cult in empty-crown masks, pry out their hearts to "feed the Voice". Each day she asks for your help: Weaver's Lane, the Miller's Cellar, behind the stables, the cathedral vigil, the Gearwright's camp, the Undercroft beneath the Dawnspire road, and on the last day, a lamp. Every errand is a fight you **win**, led by a named elite, and each one grants a **Boon of Vael** that makes you stronger against the challengers at night:
+
+| Boon | Effect at night |
+|---|---|
+| Edda's First Lamp | +10% damage to challengers |
+| Watch Whistle | every challenger starts at 90% |
+| Pip's Lucky Button | +15 Dread whenever a challenger falls |
+| Ivy's Vigil Candle | parry window +0.05s |
+| Liore's Clear Lens | challengers learn 10% slower |
+| The Stolen Lamp-Heart | +40 max Will |
+| The Last Lamp of Vael | +10% damage; the Stranger starts at 90% |
+
+Finished errands also add Crowns to the next prestige. (And Edda knew who you were all along.)
+
+## Secrets and the Chronicle
+
+Twelve **secrets** hide the King's true story where it happened: a sword in a burned stump with WREN on the crossguard (pull it free once you remember Wren), Corvin's split shield by the bridge, the Lion's laurel in the pit sand, Ashe's ledger with your own name crossed out, Alder's smiling mask, an empty throne of black glass under the Dawnspire, a statue with its face chiselled off, a child's chalk drawing, initials in the Flagon's wood, a cracked coronation bell, a clock with a thirteenth hour, and a ring-shaped hollow in the river silt. Some only tell everything once you remember enough. Ten torn **pages of the Chronicle of Vael** tell how the crown was forged from a fallen star, and what it wants. Each find pays Crowns; finding them all pays more.
+
+## The map: the land was drawn from it
+
+Press **M**. Vael is drawn on old, coffee-stained parchment, and the island is made from that same sheet: every dark stain on the map is water in the world (sea and lagoons, with a sandy shore where the stain's tide-mark dried) and the light paper is the land. The city, the roads and every place you need stay dry. A minimap sits in the corner.
+
+## Board skirmishes: fights you can win
+
+Each chapter of the board now has a **SKIRMISH** tile before its challenger: a Shade from that part of the King's past (the Scarecrow Knight, the Deserter's Shade, the Crowd's Champion, the Penitent Flame, the Hollow Pilgrim, the Crown's Echo). It has one life and learns nothing. Banish it for Crowns, Dread, a reforged skill and a **trophy** (+4% damage to every challenger for the rest of the run). Lose and you lose nothing but the prize.
+
+## Look
+
+Everything but your hands is pixel art in the spirit of a pixel dungeon crawler: chunky stone bricks with dark mortar, cobbles, plank doors, shingle roofs, plaster and timber, pixel grass, bark and leaves, water and sand, all mapped in world space so every texel is the same size. People are built with big block heads and painted pixel faces (beards, stubble, goggles, veils, bandanas, porcelain masks) and dress for their trade. The arena is a pixel dungeon hall. The UI wears the King's state and stays out of the way. At first it is corrupted: black-violet panels with blood-red, thorned borders and red cracks glowing in them, a dark slip for anything you read, a blackened heart with a thorn through it. With every memory it lightens, through iron and bronze, until it is warm, translucent and gold-edged with gems of light at the corners, the text inked on parchment and the heart bright. The day HUD is just a purse and clock, a compass, two tracker lines, a slim Will bar over the skill slots, a hair-thin swing meter under the crosshair, and a small minimap; everything else (secrets, pages, boons, your blade) is on the map (M). The board is a candlelit map in the Inscryption manner, crowded with little cone forests in each region's colours and inked with dashed trails, with the Stranger seated across the table.
 
 ## The Stranger and the last night
 
@@ -186,6 +228,11 @@ Everything is built in code; the only scene is an empty `scenes/main.tscn`.
 - `scripts/npc.gd`: people of Vael (cower, watch, kneel by tone; townsfolk wander and mutter)
 - `scripts/day_enemy.gd`: foes by day (thugs, archers, automatons and the six day bosses), thinking on ticks
 - `scripts/stranger.gd`: the Stranger's model: corrupts as you purify, hood down after the reveal
+- `scripts/sidestory.gd`: **the Lamplighter's story, the secrets, the Chronicle, the crier and ambush shouts**
+- `scripts/pixtex.gd`: pixel textures (bricks, cobbles, planks, shingles, ground, bark, leaves, plaster, metal, cloth, tiles, water, grain) and pixel faces; `pixelize()` turns flat-coloured props into pixel art
+- `scripts/swords.gd`: detailed blades for every weapon (in hand, on racks, in the stump)
+- `scripts/ui/parchment.gd`: the stained parchment and `wetness()`, shared by the map and the island
+- `scripts/ui/vael_map.gd`: the map and the minimap; `scripts/ui/compass.gd`: the compass strip
 - `scripts/board.gd`: the tabletop board (the Flagon's corner table, with the Stranger seated across it), the King's piece, tiles, fog, region landmarks and camera
 - `scripts/story.gd`: **all story content**: chapters, tile texts, choice events, memories, relics and the ending. Edit this file to rewrite the story.
 - `scripts/main.gd`: world, HUD, the day / dusk / night flow, board tile events, the tick-driven fight loop, parry resolution, checkpoint/try-again, prestige flow, the last night, autoplay bot
@@ -213,5 +260,7 @@ The bot plays everything: by day it walks out through a gate to the day's boss a
 - `--level=N`: start a preview on day / night N
 - `--shot=file.png` (`--shot-delay=S`): save a screenshot after S seconds and quit (needs a renderer, e.g. `xvfb-run ... --rendering-driver opengl3`)
 - `--trace-bot`: print the day bot's position every half second
+- `--pos=x,z,yaw`: (with `--preview-day`) stand somewhere in Vael; `--talk=<npc>` opens a conversation; `--map` opens the map
+- `--gesture=<skill>`: (with `--preview-heroes`) freeze that skill's hand gesture half way
 
-Last full run (`--autoplay --fast --quit-at-end`): seven days and six nights end to end. The day bot walked out to every lair and slew all six day bosses. At night it outlasted 11 / 9 / 9 / 9 / 7 / 7 of the challengers' lives (★★★ down to ★), then beat the Stranger on the last night (playstyle read as "parry"; phase choices: forget, forget everything). 0 script errors. It has not yet been played by hand with mouse and keyboard.
+Last full run (`--autoplay --fast --quit-at-end`): seven days and six nights end to end, 0 script errors. By day the bot won all seven of the Lamplighter's errands (all seven boons) and slew five of the six day bosses. On the board it won all six skirmishes (six trophies), outlasted 12 / 10 / 11 / 7 / 9 / 8 of the challengers' lives, then beat the Stranger on the last night (playstyle read as "parry"; phase choices: forget, forget everything). Every dialogue, service, secret, page, chest, the forge and the map were also exercised by a scripted pass. It has not yet been played by hand with mouse and keyboard.

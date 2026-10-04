@@ -13,8 +13,10 @@ const Fx := preload("res://scripts/fx.gd")
 const HeroScript := preload("res://scripts/hero.gd")
 const UiArt := preload("res://scripts/ui/ui_art.gd")
 const StrangerScript := preload("res://scripts/stranger.gd")
+const Swords := preload("res://scripts/swords.gd")
+const Parchment := preload("res://scripts/ui/parchment.gd")
 const ROW_GAP := 2.7
-const COL_GAP := 2.1
+const COL_GAP := 1.85
 const START := Vector3(-4.2, 0, 2.6)
 
 var game
@@ -43,6 +45,8 @@ func _ready() -> void:
 		_build_region(c)
 	_build_piece()
 	_build_tavern()
+	_build_forest()
+	_build_trails()
 	cam = Camera3D.new()
 	cam.fov = 48.0
 	cam.far = 60.0
@@ -60,8 +64,9 @@ func tile_pos(i: int) -> Vector3:
 		return START
 	var c: int = tiles[i]["chapter"]
 	var k: int = tiles[i]["index"]
+	var n: int = Story.CHAPTERS[c]["tiles"].size()
 	var dir := 1.0 if c % 2 == 0 else -1.0
-	return Vector3((k * COL_GAP - 2.0 * COL_GAP) * dir, 0, -c * ROW_GAP)
+	return Vector3((k - (n - 1) * 0.5) * COL_GAP * dir, 0, -c * ROW_GAP)
 
 
 func current_tile() -> Dictionary:
@@ -92,7 +97,8 @@ func _build_table() -> void:
 	table.material_override = wood
 	table.position = Vector3(0, -0.2, -6)
 	add_child(table)
-	var parchment := Fx.textured(Fx.stone_texture(Color(0.42, 0.36, 0.26), Color(0.38, 0.32, 0.23), 32, 8), Vector3(6, 8, 1))
+	var parchment := Fx.textured(Parchment.texture(256, 360, 11), Vector3(1, 1, 1))
+	parchment.albedo_color = Color(0.85, 0.8, 0.75)
 	add_child(Fx.box(Vector3(13.5, 0.2, 19.0), parchment, Vector3(0, -0.1, -5.6)))
 	var trim := Fx.mat(Color(0.35, 0.12, 0.08))
 	for s in [-1.0, 1.0]:
@@ -163,6 +169,15 @@ func _build_tile(i: int) -> void:
 		"treasure":
 			marker.add_child(Fx.box(Vector3(0.6, 0.35, 0.42), Fx.mat(Color(0.4, 0.22, 0.1)), Vector3(0, 0.18, 0)))
 			marker.add_child(Fx.box(Vector3(0.64, 0.12, 0.46), Fx.mat(Color(0.85, 0.65, 0.2), 0.6), Vector3(0, 0.4, 0)))
+		"skirmish":
+			# Two blades crossed over a dark shield: a fight you can win
+			marker.add_child(Fx.box(Vector3(0.5, 0.06, 0.6), Fx.mat(Color(0.2, 0.12, 0.2)), Vector3(0, 0.03, 0)))
+			for sgn in [-1.0, 1.0]:
+				var sw := Swords.build("runeblade" if sgn < 0.0 else "falchion", 0.9)
+				sw.rotation = Vector3(PI / 2.0, 0, sgn * 0.6)
+				sw.position = Vector3(sgn * 0.12, 0.45, 0)
+				marker.add_child(sw)
+			mat.albedo_color = Color(0.3, 0.18, 0.35)
 		"altar":
 			marker.add_child(Fx.box(Vector3(0.35, 0.8, 0.35), Fx.mat(Color(0.3, 0.28, 0.32)), Vector3(0, 0.4, 0)))
 			marker.add_child(Fx.box(Vector3(0.18, 0.28, 0.18), Fx.mat(Color(0.6, 0.4, 1.0), 6.0), Vector3(0, 0.95, 0)))
@@ -323,6 +338,99 @@ func _build_tavern() -> void:
 	candle_lights.append(hearth)
 
 
+## The map's woods, Inscryption-style: little cones crowding every region between the tiles,
+## each region in its own kind (burnt stumps, dark pines, sand dunes, stone spires, snowy peaks,
+## black glass). One MultiMesh per region, so hundreds of them cost almost nothing.
+const FOREST := [
+	[Color(0.28, 0.24, 0.2), 0.8],   # the Ashen Village: burnt trees
+	[Color(0.16, 0.3, 0.18), 1.0],   # Oathkeep: dark pines
+	[Color(0.72, 0.6, 0.38), 0.55],  # the Sunfield: dunes
+	[Color(0.55, 0.55, 0.6), 1.15],  # the Cathedral: stone spires
+	[Color(0.85, 0.88, 0.92), 1.1],  # Pilgrim Heights: snowy peaks
+	[Color(0.12, 0.06, 0.16), 1.25], # the Dawnspire: black glass
+]
+
+
+func _build_forest() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 23
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = 1.0
+	cone.height = 1.0
+	cone.radial_segments = 6
+	cone.rings = 1
+	for c in Story.CHAPTERS.size():
+		var spots: Array[Transform3D] = []
+		var z0 := -c * ROW_GAP
+		var side := -1.0 if c % 2 == 0 else 1.0
+		var tries := 0
+		while spots.size() < 46 and tries < 900:
+			tries += 1
+			var p := Vector3(rng.randf_range(-6.5, 6.5), 0, z0 + rng.randf_range(-ROW_GAP * 0.5, ROW_GAP * 0.5))
+			if p.z > 3.9 or p.z < -14.9:
+				continue
+			if p.distance_to(Vector3(side * 5.9, 0, z0)) < 1.1:
+				continue  # the region's landmark
+			if p.distance_to(START) < 1.0:
+				continue
+			var clear := true
+			for i in tiles.size():
+				if tile_pos(i).distance_to(p) < 1.05:
+					clear = false
+					break
+				if i + 1 < tiles.size() and _seg_dist(p, tile_pos(i), tile_pos(i + 1)) < 0.5:
+					clear = false
+					break
+			if not clear:
+				continue
+			var hgt := rng.randf_range(0.35, 0.85) * float(FOREST[c][1])
+			var rad := rng.randf_range(0.12, 0.24) * (1.6 if c == 2 else 1.0)
+			var basis := Basis().scaled(Vector3(rad, hgt, rad))
+			spots.append(Transform3D(basis, p + Vector3(0, hgt * 0.5, 0)))
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = cone
+		mm.instance_count = spots.size()
+		for i in spots.size():
+			mm.set_instance_transform(i, spots[i])
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		var col: Color = FOREST[c][0]
+		var m := Fx.mat(col)
+		if c == 4:
+			m = Fx.mat(col, 0.15)
+		mmi.material_override = m
+		add_child(mmi)
+
+
+## Dashed ink trails across the paper from each tile to the next.
+func _build_trails() -> void:
+	var ink := Fx.mat(Color(0.12, 0.07, 0.04))
+	for i in range(-1, tiles.size() - 1):
+		var a := tile_pos(i)
+		var b := tile_pos(i + 1)
+		var d := a.distance_to(b)
+		var n := int(d / 0.3)
+		for k in n:
+			if k % 2 == 1:
+				continue
+			var f := (k + 0.5) / n
+			var p := a.lerp(b, f)
+			if p.distance_to(a) < 0.85 or p.distance_to(b) < 0.85:
+				continue
+			var dash := Fx.box(Vector3(0.05, 0.012, 0.16), ink, p + Vector3(0, 0.006, 0))
+			dash.rotation.y = atan2(b.x - a.x, b.z - a.z)
+			add_child(dash)
+
+
+func _seg_dist(p: Vector3, a: Vector3, b: Vector3) -> float:
+	var ab := Vector2(b.x - a.x, b.z - a.z)
+	var ap := Vector2(p.x - a.x, p.z - a.z)
+	var k := clampf(ap.dot(ab) / maxf(ab.length_squared(), 0.001), 0.0, 1.0)
+	return (ap - ab * k).length()
+
+
 ## On a new night, the camera starts on him and drifts back to your piece.
 func peek_stranger() -> void:
 	cam_focus = Vector3(0, 0, -12.5)
@@ -352,6 +460,11 @@ func refresh() -> void:
 			mat.emission_enabled = true
 			mat.emission = Color(1.0, 0.8, 0.3)
 			mat.emission_energy_multiplier = 0.6
+		elif td["data"]["type"] == "skirmish" and GameState.skirmish_done.get(i, "") == "won":
+			mat.albedo_color = Color(0.6, 0.5, 0.25)
+			mat.emission_enabled = true
+			mat.emission = Color(1.0, 0.75, 0.3)
+			mat.emission_energy_multiplier = 0.3
 		elif visited:
 			mat.albedo_color = tint.darkened(0.6)
 			mat.emission_enabled = false
@@ -360,7 +473,7 @@ func refresh() -> void:
 			mat.emission_enabled = i == next_index()
 			mat.emission = tint
 			mat.emission_energy_multiplier = 0.5
-		marker.visible = open and (not visited or is_demon)
+		marker.visible = open and (not visited or is_demon or td["data"]["type"] == "skirmish")
 	for c in fog.size():
 		(fog[c] as Node3D).visible = c > GameState.level - 1
 		(signs[c] as Label3D).visible = c <= GameState.level  # this region and the next

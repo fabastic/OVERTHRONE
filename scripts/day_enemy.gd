@@ -5,15 +5,20 @@ extends Node3D
 ## Kinds: "thug" (raider), "automaton" (rust-bound, tough), "archer" (shoots), and the day bosses:
 ## "brute" (charges), "shield" (blocks unless it is recovering), "summoner" (calls thugs),
 ## "caster" (fire from range), "blinker" (teleports beside you).
+## "cultist": the Crownless, in white robes and porcelain masks scratched with an empty crown,
+## carrying ritual knives that burn with stolen lamp-light. An ELITE cultist leads each of Edda's
+## errands: bigger, named, and with a bar of its own.
 
 signal died(enemy)
 
 const Fx := preload("res://scripts/fx.gd")
+const PixTex := preload("res://scripts/pixtex.gd")
 
 var ow
 var kind := "thug"
 var display_name := ""
 var is_boss := false
+var elite := false
 var max_hp := 40.0
 var hp := 40.0
 var dmg := 6.0
@@ -50,6 +55,8 @@ func _ready() -> void:
 	hp = max_hp
 	if is_boss:
 		scale = Vector3.ONE * 1.55
+	elif elite:
+		scale = Vector3.ONE * 1.25
 	_build()
 	countdown = Label3D.new()
 	countdown.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -62,7 +69,7 @@ func _ready() -> void:
 	countdown.position = Vector3(0, 2.3, 0)
 	countdown.visible = false
 	add_child(countdown)
-	if is_boss:
+	if is_boss or elite:
 		name_label = Label3D.new()
 		name_label.text = display_name
 		name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -78,6 +85,9 @@ func _ready() -> void:
 func _m(c: Color, e: float = 0.0) -> StandardMaterial3D:
 	var m := Fx.mat(c, e)
 	if e <= 0.0:
+		# Pixel cloth for cloth, riveted plate for anything metallic-looking
+		var plate := kind in ["automaton", "shield"] or (is_boss and c.get_luminance() < 0.45)
+		m = PixTex.mat(PixTex.metal(c) if plate else PixTex.cloth(c, int(c.r * 40 + c.g * 30)), 0.3, false)
 		m.emission_enabled = true
 		m.emission = Color.WHITE
 		m.emission_energy_multiplier = 0.0
@@ -89,6 +99,8 @@ func _build() -> void:
 	rig = Node3D.new()
 	add_child(rig)
 	var metal := _m(Color(0.32, 0.3, 0.33) if kind != "automaton" else Color(0.45, 0.32, 0.22))
+	if kind == "cultist":
+		metal = _m(Color(0.88, 0.86, 0.82))
 	var cl := _m(cloth)
 	var glow := _m(tech, 4.0)
 	for side in [-1.0, 1.0]:
@@ -111,11 +123,39 @@ func _build() -> void:
 	head.position = Vector3(0, 0.66, 0)
 	torso.add_child(head)
 	head.add_child(Fx.box(Vector3(0.27, 0.28, 0.27), metal, Vector3(0, 0.14, 0)))
-	head.add_child(Fx.box(Vector3(0.22, 0.04, 0.02), glow, Vector3(0, 0.16, -0.14)))  # visor slit
+	var face_style := {"thug": "bandana", "archer": "hood", "cultist": "mask", "brute": "stubble", "summoner": "beard", "caster": "beard", "blinker": "mask"}.get(kind, "") as String
+	if kind in ["automaton", "shield"]:
+		head.add_child(Fx.box(Vector3(0.22, 0.04, 0.02), glow, Vector3(0, 0.16, -0.14)))  # visor slit
+	else:
+		# A painted pixel face (a bandana, a hood, a porcelain mask...)
+		var r := RandomNumberGenerator.new()
+		r.seed = hash(display_name) + int(position.x * 13.0)
+		var skin := [Color(0.85, 0.66, 0.5), Color(0.7, 0.5, 0.36), Color(0.55, 0.38, 0.28)][r.randi() % 3] as Color
+		var ftex := PixTex.face(skin, [Color(0.15, 0.1, 0.08), Color(0.4, 0.22, 0.1), Color(0.6, 0.6, 0.6)][r.randi() % 3], Color(0.15, 0.1, 0.1), face_style, r.randi() % 40)
+		var fq := MeshInstance3D.new()
+		var qm := QuadMesh.new()
+		qm.size = Vector2(0.27, 0.28)
+		fq.mesh = qm
+		fq.material_override = PixTex.decal(ftex)
+		fq.position = Vector3(0, 0.14, -0.137)
+		fq.rotation.y = PI
+		head.add_child(fq)
 	if is_boss:
 		for i in 3:
 			var horn := Fx.cylinder(0.0, 0.04, 0.22, glow, Vector3(-0.1 + i * 0.1, 0.36, 0))
 			head.add_child(horn)
+	if kind == "cultist":
+		# A deep cowl over a porcelain mask; an empty crown scratched across the brow
+		head.add_child(Fx.box(Vector3(0.34, 0.34, 0.34), cl, Vector3(0, 0.17, 0.03)))
+		head.add_child(Fx.box(Vector3(0.24, 0.26, 0.03), _m(Color(0.95, 0.93, 0.88)), Vector3(0, 0.13, -0.15)))
+		for sx in [-0.05, 0.05]:
+			head.add_child(Fx.box(Vector3(0.05, 0.02, 0.01), Fx.mat(Color(0.05, 0.02, 0.05)), Vector3(sx, 0.15, -0.167)))
+		var crownm := Fx.mat(Color(0.75, 0.6, 0.95), 2.0)
+		head.add_child(Fx.box(Vector3(0.16, 0.012, 0.01), crownm, Vector3(0, 0.22, -0.167)))
+		for k in 4:
+			head.add_child(Fx.box(Vector3(0.012, 0.03, 0.01), crownm, Vector3(-0.06 + k * 0.04, 0.24, -0.167)))
+		# A robe to the floor
+		torso.add_child(Fx.box(Vector3(0.56, 0.95, 0.36), cl, Vector3(0, -0.35, 0)))
 	for side in [-1.0, 1.0]:
 		var arm := Node3D.new()
 		arm.position = Vector3(side * 0.33, 0.56, 0)
@@ -132,6 +172,9 @@ func _build() -> void:
 	w.position = Vector3(0, -0.55, 0)
 	arm_r.add_child(w)
 	match kind:
+		"cultist":
+			w.add_child(Fx.box(Vector3(0.04, 0.04, 0.16), Fx.mat(Color(0.2, 0.15, 0.1)), Vector3(0, 0, -0.06)))
+			w.add_child(Fx.box(Vector3(0.02, 0.06, 0.34), edge_mat, Vector3(0, 0, -0.3)))
 		"caster", "summoner":
 			w.add_child(Fx.cylinder(0.025, 0.025, 1.3, metal, Vector3(0, 0.2, 0)))
 			w.add_child(Fx.sphere(0.12, edge_mat, Vector3(0, 0.9, 0)))
@@ -199,7 +242,7 @@ func on_tick() -> void:
 	var d := Vector2(pp.x - position.x, pp.z - position.z).length()
 	if not aggro and d < (14.0 if is_boss else 9.0):
 		aggro = true
-		if is_boss:
+		if is_boss or elite:
 			ow.boss_engaged(self)
 	match state:
 		"idle", "chase":

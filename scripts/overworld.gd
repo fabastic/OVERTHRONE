@@ -24,11 +24,19 @@ const StrangerScript := preload("res://scripts/stranger.gd")
 const BossScript := preload("res://scripts/boss.gd")
 const HotbarScript := preload("res://scripts/ui/hotbar.gd")
 const UiArt := preload("res://scripts/ui/ui_art.gd")
+const Swords := preload("res://scripts/swords.gd")
+const PixTex := preload("res://scripts/pixtex.gd")
+const Side := preload("res://scripts/sidestory.gd")
+const CompassScript := preload("res://scripts/ui/compass.gd")
+const MapScript := preload("res://scripts/ui/vael_map.gd")
+const Parchment := preload("res://scripts/ui/parchment.gd")
+const MAP_PX := 256        # the map of Vael is a 256-pixel parchment over the world square
+const MAP_WORLD := 100.0   # it covers -100..100 in x and z
 
 const WALL := 38.0
 const BOUND := 95.0
 const DAY_SECONDS := 300.0
-const AUTO_DAY_SECONDS := 40.0
+const AUTO_DAY_SECONDS := 70.0
 const GOLD := Color(0.95, 0.75, 0.4)
 const TEXT := Color(0.88, 0.84, 0.78)
 
@@ -102,6 +110,23 @@ var served := {}              # once-a-day services already used
 var interact_target := {}
 var t := 0.0
 var regen_block := 0.0
+var quest_foes: Array = []
+var quest_spawned := false
+var secret_nodes := {}        # secret id -> prop node
+var page_nodes := {}          # page index -> prop node
+var crier: Node3D
+var crier_t := 8.0
+var crier_i := 0
+var ambushes := {}            # which of today's ambushes have happened
+var stump_sword: Node3D
+var map_labels: Array = []     # [position, name] for the map
+var minimap
+var big_map: Control
+var map_open := false
+var map_footer: Label
+var sea_rects := {}            # collision rects that are water (the map does not ink them as walls)
+var _clears: Array = []
+var map_seed := -1             # chosen in _pick_seed: the parchment whose stains suit the land best
 
 # HUD
 var hud_layer: CanvasLayer
@@ -111,15 +136,21 @@ var day_label: Label
 var clock_bar: ProgressBar
 var will_bar: ProgressBar
 var will_label: Label
-var weapon_label: Label
 var prompt_label: Label
-var objective_label: Label
 var toast: Label
 var toast_sub: Label
 var toast_tween: Tween
 var boss_box: VBoxContainer
 var boss_name: Label
 var boss_bar: ProgressBar
+var boss_hp_label: Label
+var crowns_label: Label
+var tracker: RichTextLabel
+var swing_bar: ProgressBar
+var beat: ColorRect
+var prompt_box: PanelContainer
+var toast_box: PanelContainer
+var compass
 var hurt_overlay: ColorRect
 var hotbar
 
@@ -138,13 +169,23 @@ func _ready() -> void:
 	sun.directional_shadow_max_distance = 60.0
 	add_child(sun)
 	_build_ground()
+	_build_island()
 	_build_walls()
 	_build_city()
 	_build_outside()
 	_build_lairs()
 	_build_tech()
 	_build_people()
+	map_labels.append([Vector3(-18, 0, -22), "CLOCKTOWER"])
+	map_labels.append([Vector3(-24, 0, -12), "THE FORGE"])
+	map_labels.append([Vector3(26, 0, 24), "STABLES"])
+	map_labels.append([Vector3(0, 0, 0), "FOUNTAIN"])
 	_build_chests()
+	_build_swords()
+	_build_secrets()
+	# Everything else that is a plain flat colour gets a pixel grain (people and foes are drawn their own way)
+	var skip: Array = npcs.values() + townsfolk + [crier]
+	PixTex.pixelize(self, skip, 1.0)
 	walker = BossScript.new()
 	walker.walker = true
 	walker.ow = self
@@ -181,6 +222,8 @@ func begin_day() -> void:
 		opened.clear()
 	GameState.day_time = 0.0
 	dusk_state = ""
+	map_open = false
+	big_map.visible = false
 	glimpse_done = false
 	glimpse_t = -1.0
 	tribute.clear()
@@ -219,6 +262,14 @@ func begin_day() -> void:
 	_apply_tech()
 	_spawn_wilds()
 	_spawn_day_boss()
+	quest_foes.clear()
+	quest_spawned = false
+	ambushes.clear()
+	crier_t = 6.0
+	crier_i = 0
+	if GameState.autoplay and _quest() != {} and GameState.quest_state == "":
+		GameState.quest_state = "active"  # the bot always says yes to Edda
+	_refresh_props()
 	for id in npcs:
 		npcs[id].visible = true
 	_update_sky()
@@ -232,7 +283,21 @@ func _day_length() -> float:
 
 
 func busy() -> bool:
-	return not active or is_instance_valid(game.overlay) or get_tree().paused
+	return not active or map_open or is_instance_valid(game.overlay) or get_tree().paused
+
+
+## Recolour what the theme cannot reach (the toast title) when the King's purity changes.
+func refresh_theme() -> void:
+	if toast:
+		toast.add_theme_color_override("font_color", game.title_color())
+
+
+## The full map: the world holds still while you read it.
+func _toggle_map() -> void:
+	map_open = not map_open
+	big_map.visible = map_open
+	Sfx.play("click", -4.0, 0.7 if map_open else 0.9)
+	game.tutorial("map", "The map of Vael. Red X: today's boss. Gold star: the Lamplighter's errand. Violet diamonds: secrets you have found.")
 
 
 func _process(delta: float) -> void:
@@ -254,6 +319,9 @@ func _process(delta: float) -> void:
 			_glimpse()
 	_update_sky()
 	_update_stranger(delta)
+	_update_quest()
+	_update_crier(delta)
+	_update_ambush()
 	# Input
 	if GameState.autoplay:
 		_autoplay(delta)
@@ -289,6 +357,10 @@ func _process(delta: float) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if active and map_open and event is InputEventKey and event.pressed and not event.echo and event.keycode in [KEY_M, KEY_ESCAPE, KEY_TAB]:
+		_toggle_map()
+		get_viewport().set_input_as_handled()
+		return
 	if busy() or dusk_state == "met":
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -310,6 +382,8 @@ func _input(event: InputEvent) -> void:
 		match event.keycode:
 			KEY_E:
 				_interact()
+			KEY_M, KEY_TAB:
+				_toggle_map()
 			KEY_Q:
 				walker.try_cast(walker.selected_id())
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
@@ -358,7 +432,7 @@ func weapon_damage() -> float:
 func _swing() -> void:
 	var W := _weapon()
 	swing_cd = int(W["ticks"])
-	walker.anim_r = 1.0
+	walker.swing = 1.0
 	Sfx.play("dodge", -4.0, 0.6 + randf() * 0.2)
 	var fwd := Vector3(-sin(walker.yaw), 0, -cos(walker.yaw))
 	var hit := false
@@ -651,6 +725,10 @@ func boss_engaged(e) -> void:
 	engaged = e
 	boss_box.visible = true
 	boss_name.text = e.display_name
+	if e.elite:
+		show_toast(e.display_name, "Of the Crownless. The empty crown on its mask glows when it looks at you.", 3.0)
+		Sfx.play("learn", -6.0, 1.0)
+		return
 	var d := _boss_data()
 	show_toast(e.display_name, str(d.get("intro", "")), 4.0)
 	Sfx.play("learn", -4.0, 0.8)
@@ -667,6 +745,12 @@ func summon_adds(e, n: int) -> void:
 
 func _on_enemy_died(e) -> void:
 	enemies.erase(e)
+	if quest_foes.has(e):
+		quest_foes.erase(e)
+		GameState.add_dread(10.0 + 4.0 * day + (30.0 if e.elite else 0.0))
+		if quest_foes.is_empty() and GameState.quest_state == "active":
+			_quest_won()
+		return
 	if e.is_boss:
 		print("[DEED] day %d: %s slain" % [day, e.display_name])
 		GameState.deeds.append(_boss_data()["id"])
@@ -788,7 +872,7 @@ func _find_interact() -> void:
 		var d := Vector2(n.position.x - p.x, n.position.z - p.z).length()
 		if d < best and _facing(n.position, fwd):
 			best = d
-			interact_target = {"kind": "npc", "id": id, "label": "TALK TO " + str(Dialogue.NPCS[id]["name"])}
+			interact_target = {"kind": "npc", "id": id, "label": "TALK TO " + _npc_name(id)}
 	for c in chests:
 		if opened.has(c["id"]):
 			continue
@@ -801,10 +885,24 @@ func _find_interact() -> void:
 		if d3 < best and _facing(r["pos"], fwd):
 			best = d3
 			interact_target = {"kind": "read", "r": r, "label": "READ"}
+	for sec in Side.SECRETS:
+		var sp: Vector3 = sec["pos"]
+		var d4 := Vector2(sp.x - p.x, sp.z - p.z).length()
+		if d4 < best and _facing(sp, fwd):
+			best = d4
+			interact_target = {"kind": "secret", "s": sec, "label": "EXAMINE: " + str(sec["title"])}
+	for i in Side.PAGES.size():
+		if GameState.pages.has(i):
+			continue
+		var pp: Vector3 = Side.PAGES[i]["pos"]
+		var d5 := Vector2(pp.x - p.x, pp.z - p.z).length()
+		if d5 < best and _facing(pp, fwd):
+			best = d5
+			interact_target = {"kind": "page", "i": i, "label": "PICK UP A TORN PAGE"}
 	var dm := Vector2(mirror_pos.x - p.x, mirror_pos.z - p.z).length()
 	if dm < best and _facing(mirror_pos, fwd):
 		interact_target = {"kind": "mirror", "label": "LOOK INTO THE MIRROR"}
-	prompt_label.text = ("E: " + str(interact_target["label"])) if not interact_target.is_empty() else ""
+	prompt_label.text = str(interact_target["label"]) if not interact_target.is_empty() else ""
 
 
 func _facing(target: Vector3, fwd: Vector3) -> bool:
@@ -826,6 +924,10 @@ func _interact() -> void:
 			game._show_card(r["title"], r["text"], "STEP AWAY", _close_dialogue)
 		"mirror":
 			_mirror()
+		"secret":
+			_read_secret(interact_target["s"])
+		"page":
+			_read_page(interact_target["i"])
 
 
 func _close_dialogue() -> void:
@@ -845,7 +947,14 @@ func _price(base: int) -> int:
 	return base
 
 
+func _npc_name(id: String) -> String:
+	return str(Side.EDDA["name"]) if id == "edda" else str(Dialogue.NPCS[id]["name"])
+
+
 func _talk(id: String) -> void:
+	if id == "edda":
+		_talk_edda()
+		return
 	var N: Dictionary = Dialogue.NPCS[id]
 	var tone := Dialogue.tone()
 	if npcs.has(id):
@@ -876,7 +985,7 @@ func _talk(id: String) -> void:
 
 
 func _reply(id: String, text: String) -> void:
-	game._show_choice(Dialogue.NPCS[id]["name"], text, "", [["Thank them", _close_dialogue], ["Talk more", _talk.bind(id)]])
+	game._show_choice(_npc_name(id), text, "", [["Thank them", _close_dialogue], ["Talk more", _talk.bind(id)]])
 
 
 func _do_service(id: String, cost: int, kind: bool) -> void:
@@ -976,7 +1085,7 @@ func _forge() -> void:
 	var opts: Array = []
 	for wid in Dialogue.WEAPONS:
 		var W: Dictionary = Dialogue.WEAPONS[wid]
-		if int(W["tier"]) > day or wid == GameState.weapon:
+		if int(W["tier"]) > day or wid == GameState.weapon or int(W["cost"]) < 0:
 			continue
 		var cost := _price(int(W["cost"]))
 		opts.append(["%s · %d DMG / %d TICKS · %s" % [str(W["name"]).to_upper(), int(W["dmg"]), int(W["ticks"]), ("%d DREAD" % cost) if cost > 0 else "FREE"],
@@ -1032,6 +1141,8 @@ func _loot(c: Dictionary) -> void:
 	var cur_tier := int(_weapon()["tier"])
 	for wid in Dialogue.WEAPONS:
 		var tr := int(Dialogue.WEAPONS[wid]["tier"])
+		if int(Dialogue.WEAPONS[wid]["cost"]) < 0:
+			continue
 		if tr > cur_tier and tr <= day + (1 if sealed else 0) and (better == "" or tr > int(Dialogue.WEAPONS[better]["tier"])):
 			better = wid
 	var r := randf()
@@ -1175,15 +1286,139 @@ func _update_sky() -> void:
 # Building Vael
 # =============================================================================
 
+# =============================================================================
+# The island: the map's dark stains are Vael's sea and lakes, its light paper the land
+# =============================================================================
+
+func world_px(p: Vector3) -> Vector2:
+	return Vector2((p.x + MAP_WORLD) / (2.0 * MAP_WORLD) * MAP_PX, (p.z + MAP_WORLD) / (2.0 * MAP_WORLD) * MAP_PX)
+
+
+## Places that must stay dry (in map pixels): the city, the lairs, the roads, everything you can visit.
+func island_clears() -> Array:
+	if not _clears.is_empty():
+		return _clears
+	var k := MAP_PX / (2.0 * MAP_WORLD)
+	var add := func(p: Vector3, r: float): _clears.append([world_px(p), r * k])
+	# The walled city (a ring of dry ground around its square)
+	add.call(Vector3.ZERO, 50.0)
+	for cx in [-1.0, 0.0, 1.0]:
+		for cz in [-1.0, 0.0, 1.0]:
+			if cx != 0.0 or cz != 0.0:
+				add.call(Vector3(cx * 40.0, 0, cz * 40.0), 13.0)
+	for lk in LAIRS:
+		add.call(LAIRS[lk], 15.0)
+	add.call(Vector3(-60, 0, 15), 12.0)
+	for seg in _roads():
+		var a: Vector3 = seg[0]
+		var b: Vector3 = seg[1]
+		var n := int(a.distance_to(b) / 5.0) + 1
+		for i in n + 1:
+			add.call(a.lerp(b, float(i) / n), 5.5)
+	for sec in Side.SECRETS:
+		add.call(sec["pos"], 5.0)
+	for pg in Side.PAGES:
+		add.call(pg["pos"], 5.0)
+	for q in Side.QUEST:
+		add.call(q["where"], 10.0)
+	for c in [Vector3(-33, 0, -33), Vector3(33, 0, 33), Vector3(-3, 0, -35), Vector3(-26, 0, 6), Vector3(70, 0, -32), Vector3(-70, 0, -30),
+			Vector3(6, 0, 66), Vector3(-56, 0, 55), Vector3(55, 0, 52), Vector3(8, 0, -86), Vector3(-64, 0, 20)]:
+		add.call(c, 7.0)
+	add.call(Vector3(0, 0, 72), 8.0)  # the bridge
+	return _clears
+
+
+## Choose the parchment whose stains suit Vael: plenty of water (about 38% of the land) but none
+## of it drowning the city or a lair before the dry zones are even applied. Deterministic.
+func _pick_seed() -> int:
+	var best := 7
+	var best_score := INF
+	var keys: Array[Vector3] = [Vector3.ZERO, Vector3(30, 0, 30), Vector3(-30, 0, 30), Vector3(30, 0, -30), Vector3(-30, 0, -30)]
+	for lk in LAIRS:
+		keys.append(LAIRS[lk])
+	for sd in range(1, 61):
+		var score := 0.0
+		for kp in keys:
+			var px := world_px(kp)
+			score += maxf(0.0, Parchment.wetness(px.x, px.y, MAP_PX, sd, true) + 0.05) * 10.0
+		var wet := 0
+		for gz in 20:
+			for gx in 20:
+				if Parchment.wetness((gx + 0.5) * MAP_PX / 20.0, (gz + 0.5) * MAP_PX / 20.0, MAP_PX, sd, true) > Parchment.WET:
+					wet += 1
+		score += absf(wet / 400.0 - 0.38) * 8.0
+		if score < best_score:
+			best_score = score
+			best = sd
+	print("[ISLAND] parchment seed %d (score %.2f)" % [best, best_score])
+	return best
+
+
+func wet_at(p: Vector3) -> float:
+	var px := world_px(p)
+	if map_seed < 0:
+		map_seed = _pick_seed()
+	return Parchment.wetness(px.x, px.y, MAP_PX, map_seed, true, Parchment.clear_field(MAP_PX, island_clears()))
+
+
+func _build_island() -> void:
+	var cell := 2.0
+	var water := PixTex.mat(PixTex.water(Color(0.16, 0.34, 0.52), 14), 3.0)
+	water.emission_enabled = true
+	water.emission = Color(0.03, 0.08, 0.14)
+	var sand := PixTex.mat(PixTex.ground(Color(0.8, 0.7, 0.48), "sand", 15), 2.0)
+	var wet_cells: Array[Vector3] = []
+	var shore_cells: Array[Vector3] = []
+	var n := int(2.0 * MAP_WORLD / cell)
+	for iz in n:
+		var run_start := -1
+		for ix in n + 1:
+			var is_wet := false
+			if ix < n:
+				var p := Vector3(-MAP_WORLD + (ix + 0.5) * cell, 0, -MAP_WORLD + (iz + 0.5) * cell)
+				var w := wet_at(p)
+				is_wet = w > Parchment.WET
+				if is_wet:
+					wet_cells.append(p)
+				elif w > Parchment.SHORE:
+					shore_cells.append(p)
+			# Merge runs of water along the row into one solid rectangle
+			if is_wet and run_start < 0:
+				run_start = ix
+			elif not is_wet and run_start >= 0:
+				var x0 := -MAP_WORLD + run_start * cell
+				var rect := Rect2(Vector2(x0 + 0.3, -MAP_WORLD + iz * cell), Vector2((ix - run_start) * cell - 0.6, cell))
+				rects.append(rect)
+				sea_rects[rect] = true
+				run_start = -1
+	for pair in [[wet_cells, water, 0.035], [shore_cells, sand, 0.02]]:
+		var cells: Array = pair[0]
+		if cells.is_empty():
+			continue
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(cell, cell)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = pm
+		mm.instance_count = cells.size()
+		for i in cells.size():
+			mm.set_instance_transform(i, Transform3D(Basis(), cells[i] + Vector3(0, pair[2], 0)))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = pair[1]
+		add_child(mmi)
+	print("[ISLAND] %d water cells, %d shore cells" % [wet_cells.size(), shore_cells.size()])
+
+
 func _build_ground() -> void:
-	var grass := Fx.textured(Fx.stone_texture(Color(0.28, 0.4, 0.2), Color(0.25, 0.36, 0.18), 32, 8), Vector3(40, 40, 1))
+	var grass := PixTex.mat(PixTex.ground(Color(0.3, 0.48, 0.2), "grass"), 2.0)
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(BOUND * 2.0 + 10.0, BOUND * 2.0 + 10.0)
 	var g := MeshInstance3D.new()
 	g.mesh = pm
 	g.material_override = grass
 	add_child(g)
-	var cobble := Fx.textured(Fx.stone_texture(Color(0.45, 0.42, 0.4), Color(0.4, 0.37, 0.36), 32, 4), Vector3(30, 30, 1))
+	var cobble := PixTex.mat(PixTex.cobbles(Color(0.5, 0.47, 0.43)), 2.4)
 	var cm := PlaneMesh.new()
 	cm.size = Vector2(WALL * 2.0, WALL * 2.0)
 	var c := MeshInstance3D.new()
@@ -1192,7 +1427,7 @@ func _build_ground() -> void:
 	c.position.y = 0.01
 	add_child(c)
 	# Dirt roads to every lair (and around the walls to the Dawnspire)
-	var dirt := Fx.mat(Color(0.42, 0.33, 0.22))
+	var dirt := PixTex.mat(PixTex.ground(Color(0.5, 0.38, 0.24), "dirt"), 2.0)
 	for seg in _roads():
 		var a: Vector3 = seg[0]
 		var b: Vector3 = seg[1]
@@ -1200,11 +1435,13 @@ func _build_ground() -> void:
 		road.rotation.y = atan2(b.x - a.x, b.z - a.z)
 		add_child(road)
 	# The river and its bridge
-	var water := Fx.mat(Color(0.2, 0.4, 0.6), 0.4, 0.85)
+	var water := PixTex.mat(PixTex.water(Color(0.2, 0.42, 0.62)), 3.0)
+	water.emission_enabled = true
+	water.emission = Color(0.05, 0.12, 0.2)
 	add_child(Fx.box(Vector3(BOUND * 2.0 + 10.0, 0.05, 8.0), water, Vector3(0, 0.02, 72)))
 	_solid(Vector2(-49.5, 72), Vector2(93, 8))
 	_solid(Vector2(49.5, 72), Vector2(93, 8))
-	var stone := Fx.mat(Color(0.5, 0.47, 0.44))
+	var stone := PixTex.mat(PixTex.bricks(Color(0.52, 0.5, 0.47), 21), 2.0)
 	add_child(Fx.box(Vector3(6, 0.4, 12), stone, Vector3(0, 0.2, 72)))
 	for s in [-1.0, 1.0]:
 		add_child(Fx.box(Vector3(0.4, 1.0, 12), stone, Vector3(s * 3.0, 0.7, 72)))
@@ -1222,7 +1459,7 @@ func _roads() -> Array:
 
 
 func _build_walls() -> void:
-	var wall_mat := Fx.textured(Fx.stone_texture(Color(0.5, 0.46, 0.42), Color(0.42, 0.38, 0.35), 32, 4, true), Vector3(20, 2, 1))
+	var wall_mat := PixTex.mat(PixTex.bricks(Color(0.55, 0.52, 0.48), 31), 2.5)
 	var h := 6.0
 	var th := 1.6
 	# North (solid)
@@ -1234,8 +1471,8 @@ func _build_walls() -> void:
 		_wall_seg(Vector2(s * WALL, -WALL), Vector2(s * WALL, -4), h, th, wall_mat)
 		_wall_seg(Vector2(s * WALL, 4), Vector2(s * WALL, WALL), h, th, wall_mat)
 	# Towers at the corners and beside each gate
-	var tower := Fx.mat(Color(0.4, 0.37, 0.34))
-	var roof := Fx.mat(Color(0.45, 0.15, 0.12))
+	var tower := PixTex.mat(PixTex.bricks(Color(0.46, 0.43, 0.4), 32, 4, 3), 2.5)
+	var roof := PixTex.mat(PixTex.shingles(Color(0.55, 0.2, 0.15)), 1.5)
 	var towers := [Vector2(-WALL, -WALL), Vector2(WALL, -WALL), Vector2(-WALL, WALL), Vector2(WALL, WALL),
 		Vector2(WALL, -5.5), Vector2(WALL, 5.5), Vector2(-WALL, -5.5), Vector2(-WALL, 5.5), Vector2(-5.5, WALL), Vector2(5.5, WALL)]
 	for tp in towers:
@@ -1272,12 +1509,20 @@ func _building(c: Vector2, size: Vector2, h: float, wall_col: Color, roof_col: C
 	var n := Node3D.new()
 	n.position = Vector3(c.x, 0, c.y)
 	add_child(n)
-	var wm := Fx.textured(Fx.stone_texture(wall_col, wall_col.darkened(0.12), 32, 4, true), Vector3(size.x / 3.0, h / 3.0, 1))
+	# Light walls are plaster over brick; dark ones are bare stone
+	var light := wall_col.get_luminance() > 0.45
+	var wm := PixTex.mat(PixTex.plaster(wall_col, int(c.x * 7 + c.y)) if light else PixTex.bricks(wall_col, int(c.x * 3 + c.y)), 2.0)
 	n.add_child(Fx.box(Vector3(size.x, h, size.y), wm, Vector3(0, h * 0.5, 0)))
 	# Timber beams
-	var beam := Fx.mat(Color(0.25, 0.16, 0.1))
+	var beam := PixTex.mat(PixTex.planks(Color(0.3, 0.19, 0.11)), 1.5)
 	n.add_child(Fx.box(Vector3(size.x + 0.1, 0.25, size.y + 0.1), beam, Vector3(0, h * 0.55, 0)))
-	var roof_m := Fx.mat(roof_col)
+	if light:
+		# Timber framing: corner posts and a cross-beam on every face
+		for sx in [-1.0, 1.0]:
+			for sz in [-1.0, 1.0]:
+				n.add_child(Fx.box(Vector3(0.3, h, 0.3), beam, Vector3(sx * size.x * 0.5, h * 0.5, sz * size.y * 0.5)))
+		n.add_child(Fx.box(Vector3(size.x + 0.12, 0.22, size.y + 0.12), beam, Vector3(0, h - 0.15, 0)))
+	var roof_m := PixTex.mat(PixTex.shingles(roof_col.lightened(0.1), int(c.x + c.y * 3)), 1.5)
 	var w := minf(size.x, size.y)
 	var roof := Fx.box(Vector3(w * 0.75, w * 0.75, maxf(size.x, size.y) + 0.6), roof_m, Vector3(0, h, 0))
 	if size.x >= size.y:
@@ -1288,7 +1533,7 @@ func _building(c: Vector2, size: Vector2, h: float, wall_col: Color, roof_col: C
 	var dir := {"n": Vector3(0, 0, -1), "s": Vector3(0, 0, 1), "e": Vector3(1, 0, 0), "w": Vector3(-1, 0, 0)}[door] as Vector3
 	var half := Vector3(size.x * 0.5, 0, size.y * 0.5)
 	var face := Vector3(dir.x * half.x, 0, dir.z * half.z)
-	var door_box := Fx.box(Vector3(1.4, 2.4, 0.2) if dir.x == 0.0 else Vector3(0.2, 2.4, 1.4), Fx.mat(Color(0.2, 0.12, 0.08)), face + dir * 0.05 + Vector3(0, 1.2, 0))
+	var door_box := Fx.box(Vector3(1.4, 2.4, 0.2) if dir.x == 0.0 else Vector3(0.2, 2.4, 1.4), PixTex.mat(PixTex.planks(Color(0.36, 0.22, 0.12), 41), 1.0), face + dir * 0.05 + Vector3(0, 1.2, 0))
 	n.add_child(door_box)
 	var glass := Fx.mat(Color(1.0, 0.8, 0.45), 2.0)
 	var across := Vector3(dir.z, 0, dir.x).abs()
@@ -1296,6 +1541,7 @@ func _building(c: Vector2, size: Vector2, h: float, wall_col: Color, roof_col: C
 		var wpos: Vector3 = face + dir * 0.05 + across * s * minf(2.4, (size.x if dir.x == 0.0 else size.y) * 0.3) + Vector3(0, 2.0, 0)
 		n.add_child(Fx.box(Vector3(0.8, 0.8, 0.12) if dir.x == 0.0 else Vector3(0.12, 0.8, 0.8), glass, wpos))
 	if sign_text != "":
+		map_labels.append([Vector3(c.x, 0, c.y), sign_text])
 		var sign := Label3D.new()
 		sign.text = sign_text
 		sign.font = UiArt.pixel_font()
@@ -1368,7 +1614,7 @@ func _build_city() -> void:
 	var clock := Node3D.new()
 	clock.position = Vector3(-18, 0, -22)
 	add_child(clock)
-	clock.add_child(Fx.box(Vector3(5, 16, 5), Fx.textured(Fx.stone_texture(dark_wall, dark_wall.darkened(0.1), 32, 4, true), Vector3(2, 6, 1)), Vector3(0, 8, 0)))
+	clock.add_child(Fx.box(Vector3(5, 16, 5), PixTex.mat(PixTex.bricks(dark_wall, 51), 2.0), Vector3(0, 8, 0)))
 	clock.add_child(Fx.cylinder(0.0, 3.6, 4.0, Fx.mat(Color(0.25, 0.2, 0.3)), Vector3(0, 18.0, 0)))
 	var face := Fx.cylinder(1.6, 1.6, 0.2, Fx.mat(Color(0.95, 0.9, 0.75), 0.6), Vector3(0, 12.5, 2.55))
 	face.rotation.x = PI / 2.0
@@ -1473,7 +1719,7 @@ func _build_outside() -> void:
 	for k in 9:
 		add_child(Fx.box(Vector3(0.12, 1.2, 0.12), fence, gy + Vector3(-8 + k * 2, 0.6, -6)))
 		add_child(Fx.box(Vector3(0.12, 1.2, 0.12), fence, gy + Vector3(-8 + k * 2, 0.6, 6)))
-	var tomb := Fx.mat(Color(0.5, 0.5, 0.52))
+	var tomb := PixTex.mat(PixTex.bricks(Color(0.52, 0.52, 0.54), 71, 2, 1), 1.0)
 	for gx in 4:
 		for gz in 3:
 			var tp := gy + Vector3(-5 + gx * 3.0, 0, -3 + gz * 3.0)
@@ -1493,12 +1739,12 @@ func _build_outside() -> void:
 	# Trees, kept off the roads and lairs
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 7
-	var trunk := Fx.mat(Color(0.3, 0.2, 0.12))
-	var leaves := [Fx.mat(Color(0.2, 0.38, 0.16)), Fx.mat(Color(0.25, 0.42, 0.18)), Fx.mat(Color(0.32, 0.4, 0.15))]
+	var trunk := PixTex.mat(PixTex.bark(Color(0.36, 0.24, 0.14)), 1.0)
+	var leaves := [PixTex.mat(PixTex.leaves(Color(0.22, 0.42, 0.17), 61), 1.0), PixTex.mat(PixTex.leaves(Color(0.28, 0.46, 0.19), 62), 1.0), PixTex.mat(PixTex.leaves(Color(0.36, 0.44, 0.16), 63), 1.0)]
 	var roads := _roads()
 	var placed := 0
 	var tries := 0
-	while placed < 70 and tries < 600:
+	while placed < 110 and tries < 900:
 		tries += 1
 		var p := Vector3(rng.randf_range(-90, 90), 0, rng.randf_range(-90, 66))
 		if absf(p.x) < WALL + 5.0 and absf(p.z) < WALL + 5.0:
@@ -1509,6 +1755,8 @@ func _build_outside() -> void:
 				ok = false
 		if p.distance_to(gy) < 11.0:
 			ok = false
+		if ok and wet_at(p) > Parchment.SHORE - 0.03:
+			ok = false  # no trees in the water or on the sand
 		for seg in roads:
 			if _seg_dist(p, seg[0], seg[1]) < 5.0:
 				ok = false
@@ -1556,9 +1804,9 @@ func _build_lairs() -> void:
 					node.add_child(Fx.sphere(0.4, Fx.mat(Color(0.4, 0.7, 1.0), 4.0), Vector3(s * 4.0, 4.4, 3.0)))
 					_solid(Vector2(c.x + s * 4.0, c.z + 3.0), Vector2(1.2, 1.2))
 			"pit":
-				var sand := Fx.mat(Color(0.75, 0.62, 0.4))
+				var sand := PixTex.mat(PixTex.ground(Color(0.78, 0.65, 0.42), "sand"), 2.0)
 				node.add_child(Fx.cylinder(9.0, 9.0, 0.05, sand, Vector3(0, 0.03, 0)))
-				var wallm := Fx.mat(Color(0.5, 0.4, 0.3))
+				var wallm := PixTex.mat(PixTex.bricks(Color(0.55, 0.43, 0.32), 81), 2.0)
 				for k in 14:
 					if k == 3:
 						continue  # the entrance
@@ -1641,7 +1889,7 @@ func _build_tech() -> void:
 		tech.append([g, 2])
 		_solid(Vector2(lp.x, lp.z), Vector2(0.3, 0.3))
 	# Conduits: glowing aether lines along the avenues (day 3+)
-	var cond := Fx.mat(Color(0.3, 0.9, 1.0), 3.0)
+	var cond := Fx.mat(Color(0.3, 0.85, 1.0), 1.1)
 	for s in [-1.0, 1.0]:
 		var a := Fx.box(Vector3(WALL * 2.0 - 4.0, 0.05, 0.15), cond, Vector3(0, 0.03, s * 4.2))
 		add_child(a)
@@ -1714,6 +1962,26 @@ func _build_people() -> void:
 		n.position = SPOTS.get(N["spot"], Vector3.ZERO)
 		add_child(n)
 		npcs[id] = n
+	var edda = NpcScript.new()
+	edda.npc_id = "edda"
+	edda.display_name = Side.EDDA["name"]
+	edda.cloth = Side.EDDA["look"][0]
+	edda.accent = Side.EDDA["look"][1]
+	edda.ow = self
+	edda.position = Side.EDDA["spot"]
+	add_child(edda)
+	npcs["edda"] = edda
+	# Edda's long lamplighter's pole
+	var pole := Fx.box(Vector3(0.05, 2.6, 0.05), Fx.mat(Color(0.3, 0.2, 0.12)), Vector3(0.35, 1.3, -0.1))
+	edda.add_child(pole)
+	edda.add_child(Fx.box(Vector3(0.12, 0.12, 0.12), Fx.mat(Color(1.0, 0.8, 0.4), 4.0), Vector3(0.35, 2.65, -0.1)))
+	crier = NpcScript.new()
+	crier.cloth = Color(0.55, 0.15, 0.15)
+	crier.accent = Color(0.95, 0.8, 0.3)
+	crier.ow = self
+	crier.position = Vector3(-3.5, 0, -10)
+	add_child(crier)
+	crier.add_child(Fx.cylinder(0.12, 0.08, 0.18, Fx.mat(Color(0.85, 0.65, 0.2), 0.4), Vector3(0.32, 1.0, -0.2)))
 	# Townsfolk wander the avenues
 	var palette := [[Color(0.5, 0.35, 0.25), Color(0.7, 0.6, 0.4)], [Color(0.3, 0.35, 0.5), Color(0.5, 0.7, 0.9)],
 		[Color(0.55, 0.5, 0.4), Color(0.8, 0.4, 0.3)], [Color(0.35, 0.45, 0.3), Color(0.9, 0.8, 0.5)]]
@@ -1784,6 +2052,12 @@ func _spawn_enemy(kind: String, p: Vector3):
 			e.speed = 2.0
 			e.cloth = Color(0.45, 0.32, 0.22)
 			e.tech = Color(0.4, 0.8, 1.0)
+		"cultist":
+			e.max_hp = 50.0 * g
+			e.dmg = 7.0 * (1.0 + 0.25 * (day - 1))
+			e.speed = 3.0
+			e.cloth = Color(0.85, 0.83, 0.8)
+			e.tech = Color(0.75, 0.55, 1.0)
 		_:
 			e.max_hp = 40.0 * g
 			e.dmg = 6.0 * (1.0 + 0.25 * (day - 1))
@@ -1847,20 +2121,13 @@ func _build_weapon() -> void:
 	if is_instance_valid(weapon_node):
 		weapon_node.queue_free()
 	var W := _weapon()
-	weapon_node = Node3D.new()
-	weapon_node.position = Vector3(0.0, 0.03, -0.08)
-	weapon_node.rotation = Vector3(0.75, 0.15, 0)  # tip up and forward, into view
+	weapon_node = Swords.build(GameState.weapon, 0.34 + float(W["reach"]) * 0.07, GameState.weapon_tune)
+	# A hammer grip: the handle runs across the palm under the curled fingers and the blade
+	# leaves the fist on the thumb side (-X for the right hand), angled a little forward.
+	weapon_node.position = Vector3(0.0, -0.03, -0.085)
+	weapon_node.rotation = Vector3(0, PI / 2.0 - 0.3, 0)
 	walker.right_hand.add_child(weapon_node)
-	var steel := Fx.mat(W["color"], float(W["glow"]) + 0.6 * GameState.weapon_tune)
-	var grip := Fx.mat(Color(0.25, 0.15, 0.1))
-	var length := 0.22 + float(W["reach"]) * 0.1
-	weapon_node.add_child(Fx.box(Vector3(0.03, 0.03, 0.12), grip, Vector3(0, 0, 0.02)))
-	weapon_node.add_child(Fx.box(Vector3(0.14, 0.025, 0.025), Fx.mat(Color(0.75, 0.6, 0.25)), Vector3(0, 0, -0.05)))
-	if W["kind"] == "axe":
-		weapon_node.add_child(Fx.box(Vector3(0.02, 0.02, length), grip, Vector3(0, 0, -0.06 - length * 0.5)))
-		weapon_node.add_child(Fx.box(Vector3(0.015, 0.12, 0.09), steel, Vector3(0, 0.04, -0.06 - length * 0.9)))
-	else:
-		weapon_node.add_child(Fx.box(Vector3(0.045, 0.014, length), steel, Vector3(0, 0, -0.06 - length * 0.5)))
+	walker.holding = true
 
 
 # =============================================================================
@@ -1882,87 +2149,188 @@ func _build_hud() -> void:
 	hud.add_child(hurt_overlay)
 	hurt_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
+	# Top-left: purse and clock
+	var tl: PanelContainer = game.hud_panel()
+	game._anchor(tl, 0, 0, 0, 0, 12, 10, 300, 10)
+	hud.add_child(tl)
 	var info := VBoxContainer.new()
-	game._anchor(info, 0, 0, 0, 0, 16, 12, 420, 120)
-	hud.add_child(info)
+	info.add_theme_constant_override("separation", 4)
+	tl.add_child(info)
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
+	row.add_theme_constant_override("separation", 6)
 	info.add_child(row)
-	var flame := TextureRect.new()
-	flame.texture = UiArt.icon("dread")
-	flame.custom_minimum_size = Vector2(40, 40)
-	flame.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	flame.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	row.add_child(flame)
-	dread_label = game._label("", 32, Color(0.56, 0.85, 1.0))
+	row.add_child(_icon("dread", 32))
+	dread_label = game._label("", 24, Color(0.56, 0.85, 1.0))
+	dread_label.custom_minimum_size = Vector2(90, 0)
 	row.add_child(dread_label)
+	row.add_child(_icon("crown", 28))
+	crowns_label = game._label("", 24, GOLD)
+	row.add_child(crowns_label)
 	day_label = game._label("", 16, GOLD)
 	info.add_child(day_label)
-	clock_bar = game._bar(Color(1.0, 0.75, 0.35), 220, 6)
+	clock_bar = game._bar(Color(1.0, 0.75, 0.35), 260, 8)
 	info.add_child(clock_bar)
+	var dusk_mark := ColorRect.new()
+	dusk_mark.color = Color(0.7, 0.3, 0.9)
+	dusk_mark.custom_minimum_size = Vector2(4, 8)
+	clock_bar.add_child(dusk_mark)
+	dusk_mark.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
+	dusk_mark.offset_left = -4
 
-	objective_label = game._label("", 16, TEXT)
-	objective_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	objective_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	game._anchor(objective_label, 1, 0, 1, 0, -460, 14, -16, 90)
-	hud.add_child(objective_label)
-
+	# Top-centre: the compass, and under it a boss bar when one is fighting you
+	compass = CompassScript.new()
+	compass.ow = self
+	game._anchor(compass, 0.5, 0, 0.5, 0, -220, 6, 220, 52)
+	hud.add_child(compass)
 	boss_box = VBoxContainer.new()
-	game._anchor(boss_box, 0.5, 0, 0.5, 0, -240, 14, 240, 70)
+	game._anchor(boss_box, 0.5, 0, 0.5, 0, -250, 62, 250, 112)
 	hud.add_child(boss_box)
-	boss_name = game._label("", 22, GOLD)
+	boss_name = game._label("", 16, GOLD)
 	boss_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	boss_box.add_child(boss_name)
-	boss_bar = game._bar(Color(0.85, 0.5, 0.3), 480, 12)
+	var bb: Array = game.labeled_bar(Color(0.85, 0.45, 0.25), 500, 16)
+	boss_bar = bb[0]
+	boss_hp_label = bb[1]
 	boss_box.add_child(boss_bar)
 	boss_box.visible = false
 
+	# Top-right: what today holds
+	var tr: PanelContainer = game.hud_panel()
+	game._anchor(tr, 1, 0, 1, 0, -360, 10, -12, 10)
+	tr.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	hud.add_child(tr)
+	var tv := VBoxContainer.new()
+	tv.add_theme_constant_override("separation", 2)
+	tr.add_child(tv)
+	tracker = RichTextLabel.new()
+	tracker.bbcode_enabled = true
+	tracker.fit_content = true
+	tracker.scroll_active = false
+	tracker.autowrap_mode = TextServer.AUTOWRAP_OFF
+	tracker.custom_minimum_size = Vector2(330, 0)
+	tracker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tracker.add_theme_font_override("normal_font", UiArt.pixel_font())
+	tracker.add_theme_font_size_override("normal_font_size", 16)
+	tracker.add_theme_color_override("default_color", TEXT)
+	tracker.add_theme_constant_override("line_separation", 4)
+	tracker.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	tracker.add_theme_constant_override("shadow_offset_x", 2)
+	tracker.add_theme_constant_override("shadow_offset_y", 2)
+	tv.add_child(tracker)
+
+	# Bottom-centre: Will and the skill bar, nothing else
 	var bottom := VBoxContainer.new()
-	game._anchor(bottom, 0.5, 1.0, 0.5, 1.0, -290, -196, 290, -4)
-	bottom.add_theme_constant_override("separation", 6)
+	bottom.add_theme_constant_override("separation", 2)
+	game._anchor(bottom, 0.5, 1, 0.5, 1, -300, -160, 300, -4)
 	hud.add_child(bottom)
-	weapon_label = game._label("", 16, TEXT)
-	weapon_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bottom.add_child(weapon_label)
-	will_label = game._label("", 16, Color(0.9, 0.2, 0.18))
-	will_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bottom.add_child(will_label)
-	will_bar = game._bar(Color(0.7, 0.08, 0.1), 500, 12)
-	bottom.add_child(will_bar)
+	var will_row := HBoxContainer.new()
+	will_row.add_theme_constant_override("separation", 6)
+	will_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	bottom.add_child(will_row)
+	will_row.add_child(game.heart_icon())
+	var wb: Array = game.labeled_bar(Color(0.72, 0.1, 0.1), 480, 14)
+	will_bar = wb[0]
+	will_label = wb[1]
+	will_row.add_child(will_bar)
 	hotbar = HotbarScript.new()
 	hotbar.boss = walker
+	hotbar.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	bottom.add_child(hotbar)
 
+	# Bottom-right: the minimap, on parchment in a wooden frame
+	var mp: PanelContainer = game.hud_panel(4.0)
+	game._anchor(mp, 1, 1, 1, 1, -178, -178, -12, -12)
+	hud.add_child(mp)
+	minimap = MapScript.new()
+	minimap.ow = self
+	minimap.mini = true
+	minimap.custom_minimum_size = Vector2(150, 150)
+	mp.add_child(minimap)
+	# The full map (M): a big sheet of parchment over everything
+	big_map = game.hud_panel(8.0)
+	game._anchor(big_map, 0.5, 0.5, 0.5, 0.5, -330, -340, 330, 340)
+	hud.add_child(big_map)
+	var bmv := VBoxContainer.new()
+	big_map.add_child(bmv)
+	var bm = MapScript.new()
+	bm.ow = self
+	bm.custom_minimum_size = Vector2(620, 620)
+	bmv.add_child(bm)
+	map_footer = game._label("", 16, Color(1.0, 0.85, 0.6))
+	map_footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bmv.add_child(map_footer)
+	big_map.visible = false
+
+	# Centre: crosshair, the tick beat, and the interact prompt
 	for r in [Rect2(-1, -7, 2, 14), Rect2(-7, -1, 14, 2)]:
 		var c := ColorRect.new()
 		c.color = Color(1, 0.9, 0.8, 0.7)
 		c.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		game._anchor(c, 0.5, 0.5, 0.5, 0.5, r.position.x, r.position.y, r.end.x, r.end.y)
 		hud.add_child(c)
+	beat = ColorRect.new()
+	beat.color = Color(1.0, 0.85, 0.5, 0.0)
+	beat.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	beat.rotation = PI / 4.0
+	beat.pivot_offset = Vector2(3, 3)
+	game._anchor(beat, 0.5, 0.5, 0.5, 0.5, -3, 14, 3, 20)
+	hud.add_child(beat)
+	# Your blade's readiness: a hair-thin bar under the crosshair that fills between swings
+	swing_bar = game._bar(Color(1.0, 0.9, 0.7, 0.8), 28, 3)
+	game._anchor(swing_bar, 0.5, 0.5, 0.5, 0.5, -14, 24, 14, 27)
+	hud.add_child(swing_bar)
+	prompt_box = game.hud_panel(6.0)
+	game._anchor(prompt_box, 0.5, 0.5, 0.5, 0.5, -200, 34, 200, 34)
+	prompt_box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	hud.add_child(prompt_box)
+	var prow := HBoxContainer.new()
+	prow.alignment = BoxContainer.ALIGNMENT_CENTER
+	prow.add_theme_constant_override("separation", 8)
+	prompt_box.add_child(prow)
+	var key: Label = game._label(" E ", 16, Color(0.1, 0.05, 0.05))
+	var ksb := StyleBoxFlat.new()
+	ksb.bg_color = Color("ffd27a")
+	ksb.set_content_margin_all(2)
+	key.add_theme_stylebox_override("normal", ksb)
+	key.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0))
+	prow.add_child(key)
 	prompt_label = game._label("", 16, Color(1.0, 0.9, 0.6))
-	prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	game._anchor(prompt_label, 0.5, 0.5, 0.5, 0.5, -300, 26, 300, 50)
-	hud.add_child(prompt_label)
+	prow.add_child(prompt_label)
+	prompt_box.visible = false
 
-	var msg := VBoxContainer.new()
-	game._anchor(msg, 0, 0.2, 1, 0.2, 0, 0, 0, 120)
-	hud.add_child(msg)
+	# Toasts: big news on a wooden sign that sizes itself to the words
+	toast_box = game.hud_panel(12.0)
+	game._anchor(toast_box, 0.5, 0.33, 0.5, 0.33, -200, 0, 200, 0)
+	toast_box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	hud.add_child(toast_box)
+	var tvb := VBoxContainer.new()
+	toast_box.add_child(tvb)
 	toast = game._label("", 40, GOLD)
 	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	msg.add_child(toast)
+	tvb.add_child(toast)
 	toast_sub = game._label("", 16, TEXT)
 	toast_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	toast_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	toast_sub.custom_minimum_size = Vector2(800, 0)
-	toast_sub.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	msg.add_child(toast_sub)
-	msg.modulate.a = 0.0
+	toast_sub.custom_minimum_size = Vector2(560, 0)
+	tvb.add_child(toast_sub)
+	hud.move_child(big_map, -1)  # the open map sits over everything else
+	toast_box.modulate.a = 0.0
+
+
+func _icon(id: String, px: int) -> TextureRect:
+	var tr := TextureRect.new()
+	tr.texture = UiArt.icon(id)
+	tr.custom_minimum_size = Vector2(px, px)
+	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return tr
 
 
 func show_toast(main: String, sub: String = "", duration: float = 3.0) -> void:
 	toast.text = main
 	toast_sub.text = sub
-	var box: Control = toast.get_parent()
+	var box: Control = toast_box
 	if toast_tween:
 		toast_tween.kill()
 	toast_tween = create_tween()
@@ -1972,7 +2340,7 @@ func show_toast(main: String, sub: String = "", duration: float = 3.0) -> void:
 
 
 ## A person says something out loud: a speech line over their head.
-func say(n: Node3D, text: String) -> void:
+func say(n: Node3D, text: String, duration: float = 2.4) -> void:
 	var l := Label3D.new()
 	l.text = text
 	l.font = UiArt.pixel_font()
@@ -1986,23 +2354,23 @@ func say(n: Node3D, text: String) -> void:
 	l.position = Vector3(0, 2.4, 0)
 	n.add_child(l)
 	var tw := l.create_tween()
-	tw.tween_interval(2.4)
+	tw.tween_interval(duration)
 	tw.tween_property(l, "modulate:a", 0.0, 0.6)
 	tw.tween_callback(l.queue_free)
 
 
 func _objective_text() -> String:
 	if dusk_state != "":
-		return "DUSK · SOMEONE IS COMING FOR YOU"
+		return "DUSK\nSOMEONE IS COMING FOR YOU"
 	if GameState.is_final_night():
-		return "THE LAST DAY · NO BOSS WALKS VAEL TODAY\nMAKE YOUR PEACE. AT DUSK, HE COMES."
+		return "THE LAST DAY. NO BOSS TODAY.\nAT DUSK, HE COMES."
 	var d := _boss_data()
 	if d.is_empty():
 		return ""
 	if GameState.day_boss_slain:
-		return "DEED DONE · %s IS SLAIN\nWALK THE CITY UNTIL DUSK" % d["name"]
+		return "DEED DONE: %s\nWALK THE CITY UNTIL DUSK" % _short(d["name"], 22)
 	var to: Vector3 = LAIRS[d["lair"]] - walker.position
-	return "TODAY: %s\n%s · %dM %s" % [d["name"], LAIR_NAMES[d["lair"]], int(Vector2(to.x, to.z).length()), _compass(to)]
+	return "%s\n%dM %s · %s" % [d["name"], int(Vector2(to.x, to.z).length()), _compass_short(to), LAIR_NAMES[d["lair"]]]
 
 
 func _compass(v: Vector3) -> String:
@@ -2013,17 +2381,27 @@ func _compass(v: Vector3) -> String:
 
 func _update_hud() -> void:
 	dread_label.text = "%d" % int(GameState.dread)
+	crowns_label.text = "%d" % GameState.crowns
 	var dt := GameState.day_time
 	var phase := "MORNING" if dt < 0.3 else ("NOON" if dt < 0.5 else ("AFTERNOON" if dt < 0.75 else ("EVENING" if dt < 1.0 else "DUSK")))
-	day_label.text = "DAY %d · %s" % [day, phase]
+	day_label.text = "DAY %d OF 7  ·  %s" % [day, phase]
 	clock_bar.value = clampf(dt, 0.0, 1.0)
 	will_bar.value = will / maxf(1.0, will_max)
 	will_label.text = "YOUR WILL  %d / %d" % [int(ceil(will)), int(will_max)]
 	var W := _weapon()
-	weapon_label.text = "%s%s · LMB SWING · Q CAST · RMB PARRY" % [str(W["name"]).to_upper(), (" +%d" % GameState.weapon_tune) if GameState.weapon_tune > 0 else ""]
-	objective_label.text = _objective_text()
+	swing_bar.value = 1.0 - float(swing_cd) / maxf(1.0, float(W["ticks"]))
+	var txt := "[color=#ff9a8a]%s[/color]\n[color=#ffd98a]%s[/color]" % [_track_boss(), _track_errand()]
+	if txt != tracker.text:
+		tracker.text = txt
+	if map_open:
+		map_footer.text = "%s  ·  SECRETS %d/%d  ·  PAGES %d/%d  ·  BOONS %d  ·  M: CLOSE" % [
+			str(W["name"]).to_upper(), GameState.secrets.size(), Side.SECRETS.size(), GameState.pages.size(), Side.PAGES.size(), GameState.boons.size()]
 	if is_instance_valid(engaged) and not engaged.dead:
 		boss_bar.value = engaged.hp / engaged.max_hp
+		boss_hp_label.text = "%d / %d" % [int(ceil(engaged.hp)), int(engaged.max_hp)]
+	beat.color.a = walker.tick_flash * 0.9
+	prompt_box.visible = prompt_label.text != ""
+	compass.markers = _markers()
 
 
 # =============================================================================
@@ -2051,8 +2429,11 @@ func _autoplay(delta: float) -> void:
 			walker.try_parry()
 	var foe = nearest_enemy(walker.head.global_position, 9.0)
 	var goal: Vector3
+	var q := _quest()
 	if foe != null:
 		goal = foe.position
+	elif GameState.quest_state == "active" and not q.is_empty():
+		goal = q["where"]  # Edda's errand first
 	elif is_instance_valid(day_boss) and not day_boss.dead:
 		goal = day_boss.position
 	else:
@@ -2164,3 +2545,404 @@ class Shot extends Node3D:
 		if hit != null or life <= 0.0 or lp.y < 0.05 or ow.blocked(lp):
 			ow.explode(global_position, id, dmg, radius, hit)
 			queue_free()
+
+
+# =============================================================================
+# The Lamplighter's story (sidestory.gd)
+# =============================================================================
+
+func _quest() -> Dictionary:
+	var i := GameState.quest_step
+	if i >= Side.QUEST.size():
+		return {}
+	return Side.QUEST[i]
+
+
+func _quest_text() -> String:
+	var q := _quest()
+	if q.is_empty():
+		return "EVERY LAMP IN VAEL IS LIT\n"
+	match GameState.quest_state:
+		"":
+			return "%s\nSPEAK TO EDDA BY THE PLAZA" % q["title"]
+		"active":
+			var to: Vector3 = q["where"] - walker.position
+			var left := "" if quest_foes.is_empty() else " · %d LEFT" % quest_foes.size()
+			return "%s%s\n%dM %s · %s" % [q["title"], left, int(Vector2(to.x, to.z).length()), _compass_short(to), _short(str(q["where_name"]).split(",")[0], 18)]
+	return "%s\nDONE. EDDA THANKS YOU" % q["title"]
+
+
+## The tracker's two lines: today's boss, and Edda's errand. Short enough to glance at.
+func _track_boss() -> String:
+	if dusk_state != "":
+		return "DUSK · SOMEONE IS COMING"
+	var d := _boss_data()
+	if d.is_empty():
+		return "THE LAST DAY · NO BOSS"
+	if GameState.day_boss_slain:
+		return "DEED DONE · %s" % _short(d["name"], 20)
+	var to: Vector3 = LAIRS[d["lair"]] - walker.position
+	return "%s · %dM %s" % [_short(str(d["name"]).split(" THE ")[0], 18), int(Vector2(to.x, to.z).length()), _compass_short(to)]
+
+
+func _track_errand() -> String:
+	var q := _quest()
+	if q.is_empty():
+		return "EVERY LAMP IS LIT"
+	match GameState.quest_state:
+		"":
+			return "EDDA WAITS · THE PLAZA"
+		"active":
+			var to: Vector3 = q["where"] - walker.position
+			var left := "" if quest_foes.is_empty() else " · %d LEFT" % quest_foes.size()
+			return "%s · %dM %s%s" % [_short(q["title"], 16), int(Vector2(to.x, to.z).length()), _compass_short(to), left]
+	return "%s · DONE" % _short(q["title"], 18)
+
+
+func _short(text: String, n: int) -> String:
+	return text if text.length() <= n else text.substr(0, n - 1) + "."
+
+
+func _compass_short(v: Vector3) -> String:
+	var a := atan2(v.x, -v.z)
+	return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][posmod(roundi(a / (TAU / 8.0)), 8)]
+
+
+func _talk_edda() -> void:
+	var tone := Dialogue.tone()
+	npcs["edda"].talk()
+	Sfx.play("click", -4.0, 0.8)
+	var q := _quest()
+	var opts: Array = []
+	var body: String = Side.EDDA["greet"][tone]
+	var title := str(Side.EDDA["name"])
+	if q.is_empty():
+		body += "\n\nEvery lamp in Vael is lit. Every one."
+	elif GameState.quest_state == "":
+		title = "THE LAMPLIGHTER · " + str(q["title"])
+		body = str(q["ask"])
+		opts.append(["I'll go. (%s)" % q["where_name"], _accept_quest])
+	elif GameState.quest_state == "active":
+		body = "%s\n\n(%s)" % ["Still out there, are they? Go on. I'll keep the lamp lit for you.", q["where_name"]]
+	else:
+		body = str(Side.EDDA["done"])
+	opts.append(["Ask about the man in white", _ask_stranger.bind("edda")])
+	opts.append(["Leave", _close_dialogue])
+	game._show_choice(title, body, "", opts)
+
+
+func _accept_quest() -> void:
+	GameState.quest_state = "active"
+	_close_dialogue()
+	var q := _quest()
+	show_toast(str(q["title"]), "THE LAMPLIGHTER'S ERRAND: " + str(q["where_name"]), 3.5)
+	game.tutorial("quest", "Edda's errands are fights you can WIN. Each one earns a BOON that makes you stronger against the challengers at night. The gold marker on the compass shows the way.")
+
+
+func _update_quest() -> void:
+	if GameState.quest_state != "active" or dusk_state != "":
+		return
+	var q := _quest()
+	if q.is_empty():
+		return
+	var where: Vector3 = q["where"]
+	var d := Vector2(where.x - walker.position.x, where.z - walker.position.z).length()
+	if (q["foes"] as Array).is_empty():
+		if d < 4.0:
+			_quest_won()
+		return
+	if quest_spawned or d > 28.0:
+		return
+	quest_spawned = true
+	for f in q["foes"]:
+		for k in int(f[1]):
+			var a := randf() * TAU
+			var e = _spawn_enemy(f[0], where + Vector3(cos(a), 0, sin(a)) * randf_range(2.0, 6.0))
+			e.aggro = true
+			quest_foes.append(e)
+	if str(q["elite"]) != "":
+		var el = _spawn_enemy("cultist", where)
+		el.elite = true
+		el.display_name = q["elite"]
+		el.max_hp *= 4.0
+		el.dmg *= 1.6
+		el.hp = el.max_hp
+		el.reach = 2.2
+		quest_foes.append(el)
+	say(quest_foes[0], Side.AMBUSH_SHOUTS.pick_random())
+	show_toast(str(q["title"]), "The Crownless are waiting for you.", 2.5)
+
+
+func _quest_won() -> void:
+	GameState.quest_state = "won"
+	var q := _quest()
+	var boon: String = q["boon"]
+	GameState.boons[boon] = true
+	print("[QUEST] step %d won: %s, boon %s" % [GameState.quest_step, q["title"], boon])
+	Sfx.play("crown")
+	var B: Dictionary = GameState.BOONS[boon]
+	game._show_choice("THE LAMPLIGHTER · " + str(q["title"]), "%s\n\nBOON OF VAEL: %s\n%s" % [q["won"], str(B["name"]).to_upper(), B["desc"]], "crown",
+		[["CONTINUE", _close_dialogue]])
+
+
+# =============================================================================
+# The town crier and the Crownless ambushes
+# =============================================================================
+
+func _update_crier(delta: float) -> void:
+	crier_t -= delta
+	if crier_t > 0.0:
+		return
+	crier_t = 22.0
+	if crier.position.distance_to(walker.position) > 30.0:
+		return
+	var lines: Array = Side.CRIER[clampi(day - 1, 0, Side.CRIER.size() - 1)]
+	say(crier, str(lines[crier_i % lines.size()]), 5.0)
+	crier_i += 1
+
+
+func _update_ambush() -> void:
+	if dusk_state != "" or day < 2:
+		return
+	for mark in [0.3, 0.62]:
+		if GameState.day_time < mark or ambushes.has(mark):
+			continue
+		ambushes[mark] = true
+		var back := Vector3(sin(walker.yaw), 0, cos(walker.yaw))
+		var n := 2 + day / 3
+		var first = null
+		for k in n:
+			var side := Vector3(-back.z, 0, back.x) * (k - (n - 1) * 0.5) * 2.0
+			var e = _spawn_enemy("cultist" if randf() < 0.6 else "thug", walker.position + back * 9.0 + side)
+			e.aggro = true
+			if first == null:
+				first = e
+		if first != null:
+			say(first, Side.AMBUSH_SHOUTS.pick_random())
+		show_toast("AMBUSH", "Masked figures step out of the crowd behind you.", 2.0)
+		Sfx.play("learn", -4.0, 1.2)
+		game.tutorial("ambush", "The Crownless hunt you by day. Fight them off for Dread, or run for the gates.")
+
+
+# =============================================================================
+# Secrets of Vael and the Chronicle (sidestory.gd)
+# =============================================================================
+
+func _build_secrets() -> void:
+	var stone := Fx.mat(Color(0.55, 0.53, 0.5))
+	for sec in Side.SECRETS:
+		var n := Node3D.new()
+		n.position = sec["pos"]
+		add_child(n)
+		secret_nodes[sec["id"]] = n
+		match str(sec["id"]):
+			"wren_sword":
+				n.add_child(Fx.cylinder(0.45, 0.55, 0.6, Fx.mat(Color(0.15, 0.1, 0.08)), Vector3(0, 0.3, 0)))
+				stump_sword = Swords.build("borrowed", 1.2)
+				stump_sword.rotation.x = -PI / 2.0  # tip down, into the wood
+				stump_sword.position = Vector3(0, 1.25, 0)
+				n.add_child(stump_sword)
+				var shine := OmniLight3D.new()
+				shine.light_color = Color(1.0, 0.95, 0.8)
+				shine.light_energy = 0.8
+				shine.omni_range = 3.0
+				shine.position = Vector3(0, 1.6, 0)
+				n.add_child(shine)
+			"corvin_shield":
+				var sh := Fx.box(Vector3(0.9, 1.1, 0.08), Fx.mat(Color(0.2, 0.3, 0.6)), Vector3(0, 0.45, 0))
+				sh.rotation = Vector3(-0.5, 0.4, 0.15)
+				n.add_child(sh)
+				n.add_child(Fx.box(Vector3(0.06, 1.1, 0.1), Fx.mat(Color(0.1, 0.08, 0.06)), Vector3(0.05, 0.47, 0.02)))
+			"lion_laurel":
+				var tm := TorusMesh.new()
+				tm.inner_radius = 0.22
+				tm.outer_radius = 0.3
+				var lr := MeshInstance3D.new()
+				lr.mesh = tm
+				lr.material_override = Fx.mat(Color(0.45, 0.42, 0.2))
+				lr.position = Vector3(0, 0.05, 0)
+				n.add_child(lr)
+				n.add_child(Fx.box(Vector3(0.25, 0.01, 0.12), Fx.mat(Color(0.9, 0.85, 0.7)), Vector3(0.45, 0.02, 0.1)))
+			"ashe_ledger":
+				n.add_child(Fx.box(Vector3(0.5, 0.12, 0.38), Fx.mat(Color(0.3, 0.12, 0.1)), Vector3(0, 0.06, 0)))
+				n.add_child(Fx.box(Vector3(0.46, 0.13, 0.34), Fx.mat(Color(0.85, 0.8, 0.65)), Vector3(0.01, 0.07, 0)))
+			"alder_mask":
+				var m := Fx.box(Vector3(0.36, 0.46, 0.1), Fx.mat(Color(0.95, 0.93, 0.88), 0.3), Vector3(0, 0.3, 0))
+				m.rotation.x = -0.4
+				n.add_child(m)
+				for sx in [-0.08, 0.08]:
+					n.add_child(Fx.box(Vector3(0.06, 0.03, 0.12), Fx.mat(Color(0.05, 0.03, 0.04)), Vector3(sx, 0.36, -0.01)))
+			"empty_throne":
+				var glass := Fx.mat(Color(0.08, 0.04, 0.1), 0.6)
+				n.add_child(Fx.box(Vector3(1.6, 0.8, 1.4), glass, Vector3(0, 0.4, 0)))
+				n.add_child(Fx.box(Vector3(1.6, 2.8, 0.3), glass, Vector3(0, 1.4, -0.6)))
+				for k in 5:
+					n.add_child(Fx.box(Vector3(0.12, 0.4, 0.12), glass, Vector3(-0.6 + k * 0.3, 3.0, -0.6)))
+				_solid(Vector2(n.position.x, n.position.z), Vector2(1.6, 1.4))
+			"statue":
+				n.add_child(Fx.box(Vector3(1.6, 1.0, 1.6), stone, Vector3(0, 0.5, 0)))
+				var fig := Node3D.new()
+				fig.position = Vector3(0, 1.0, 0)
+				n.add_child(fig)
+				fig.add_child(Fx.box(Vector3(0.6, 1.2, 0.4), stone, Vector3(0, 0.9, 0)))
+				fig.add_child(Fx.box(Vector3(0.5, 0.9, 0.35), stone, Vector3(0, 0.0, 0)))
+				fig.add_child(Fx.box(Vector3(0.32, 0.36, 0.32), Fx.mat(Color(0.5, 0.48, 0.45)), Vector3(0, 1.72, 0)))
+				fig.add_child(Fx.box(Vector3(0.18, 0.7, 0.18), stone, Vector3(0.42, 1.65, 0)))
+				var sw := Swords.build("sunedge", 1.6)
+				sw.rotation.x = PI / 2.0
+				sw.position = Vector3(0.42, 2.1, 0)
+				fig.add_child(sw)
+				_solid(Vector2(n.position.x, n.position.z), Vector2(1.6, 1.6))
+			"pip_drawing", "flagon_table", "thirteen":
+				var lbl := Label3D.new()
+				lbl.text = {"pip_drawing": "( o )  ( o )\n /|\\--/|\\\n  KING + FRIEND", "flagon_table": "W.  &  W.", "thirteen": "XIII"}[sec["id"]]
+				lbl.font = UiArt.pixel_font()
+				lbl.font_size = 32
+				lbl.pixel_size = 0.01
+				lbl.modulate = Color(0.95, 0.95, 0.9) if sec["id"] == "pip_drawing" else Color(0.3, 0.2, 0.12)
+				lbl.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+				lbl.position = {"pip_drawing": Vector3(1.32, 1.4, 0), "flagon_table": Vector3(-0.53, 1.6, 0), "thirteen": Vector3(0, 1.4, 0)}[sec["id"]]
+				lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED if sec["id"] == "thirteen" else BaseMaterial3D.BILLBOARD_DISABLED
+				lbl.rotation.y = {"pip_drawing": -PI / 2.0, "flagon_table": PI / 2.0, "thirteen": 0.0}[sec["id"]]
+				n.add_child(lbl)
+			"bell":
+				var bell := Fx.cylinder(0.45, 0.8, 1.1, Fx.mat(Color(0.6, 0.42, 0.2), 0.2), Vector3(0, 0.55, 0))
+				bell.rotation.z = 0.25
+				n.add_child(bell)
+				_solid(Vector2(n.position.x, n.position.z), Vector2(1.4, 1.4))
+			"river_ring":
+				var rt := TorusMesh.new()
+				rt.inner_radius = 0.07
+				rt.outer_radius = 0.11
+				var rr := MeshInstance3D.new()
+				rr.mesh = rt
+				rr.material_override = Fx.mat(Color(0.2, 0.17, 0.15))
+				rr.position = Vector3(0, 0.03, 0)
+				n.add_child(rr)
+		# A faint glint marks something worth a look
+		var glint := Fx.particles(Color(1.0, 0.95, 0.75), 3, 1.5, 0.2, 0.03)
+		glint.position = Vector3(0, 0.6, 0)
+		glint.gravity = Vector3(0, 0.3, 0)
+		n.add_child(glint)
+	for i in Side.PAGES.size():
+		var pn := Node3D.new()
+		pn.position = Side.PAGES[i]["pos"]
+		add_child(pn)
+		var page := Fx.box(Vector3(0.3, 0.01, 0.4), Fx.mat(Color(0.92, 0.86, 0.7), 0.6), Vector3(0, 0.05, 0))
+		page.rotation.y = i * 0.7
+		pn.add_child(page)
+		var pg := Fx.particles(Color(1.0, 0.9, 0.6), 4, 1.2, 0.3, 0.03)
+		pg.position = Vector3(0, 0.3, 0)
+		pg.gravity = Vector3(0, 0.6, 0)
+		pn.add_child(pg)
+		page_nodes[i] = pn
+
+
+## Hide what has been taken (pages, the sword in the stump) after a new day or a new run.
+func _refresh_props() -> void:
+	for i in page_nodes:
+		page_nodes[i].visible = not GameState.pages.has(i)
+	if stump_sword:
+		stump_sword.visible = not GameState.secrets.has("wren_sword")
+
+
+func _read_secret(sec: Dictionary) -> void:
+	var id: String = sec["id"]
+	var unlocked := GameState.memories.size() >= int(sec["need"])
+	Sfx.play("reveal", -8.0, 0.9 if unlocked else 0.6)
+	if not unlocked:
+		game._show_card(sec["title"], str(sec["locked"]) + "\n\n(Something here is waiting for you to remember more.)", "STEP AWAY", _close_dialogue)
+		return
+	var text: String = sec["text"]
+	if not GameState.secrets.has(id):
+		GameState.secrets[id] = true
+		GameState.crowns += 4
+		text += "\n\nSECRET %d / %d FOUND  ·  +4 CROWNS" % [GameState.secrets.size(), Side.SECRETS.size()]
+		print("[SECRET] %s (%d / %d)" % [id, GameState.secrets.size(), Side.SECRETS.size()])
+		if sec.has("weapon"):
+			GameState.weapon = sec["weapon"]
+			GameState.weapon_tune = 0
+			_build_weapon()
+			_refresh_props()
+			text += "\nYOU TAKE UP %s" % str(Dialogue.WEAPONS[sec["weapon"]]["name"]).to_upper()
+		if GameState.secrets.size() == Side.SECRETS.size():
+			GameState.crowns += 25
+			text += "\n\nEVERY SECRET OF VAEL: +25 CROWNS"
+	game._show_card(sec["title"], text, "STEP AWAY", _close_dialogue)
+
+
+func _read_page(i: int) -> void:
+	GameState.pages[i] = true
+	GameState.crowns += 2
+	_refresh_props()
+	Sfx.play("coin", -4.0, 0.8)
+	var text: String = Side.PAGES[i]["text"] + "\n\nCHRONICLE PAGE %d / %d  ·  +2 CROWNS" % [GameState.pages.size(), Side.PAGES.size()]
+	if GameState.pages.size() == Side.PAGES.size():
+		GameState.crowns += 20
+		text += "\n\nTHE CHRONICLE OF VAEL IS WHOLE: +20 CROWNS"
+	print("[PAGE] %d (%d / %d)" % [i, GameState.pages.size(), Side.PAGES.size()])
+	game._show_card("THE CHRONICLE OF VAEL", text, "KEEP IT", _close_dialogue)
+
+
+# =============================================================================
+# Swords on display: the forge racks, the Watch armoury, the Flagon wall, the pit graves
+# =============================================================================
+
+func _build_swords() -> void:
+	# Hennik's rack against the back wall of the forge
+	var rack := Node3D.new()
+	rack.position = Vector3(-24, 0, -14.4)
+	add_child(rack)
+	var wood := Fx.mat(Color(0.3, 0.2, 0.12))
+	rack.add_child(Fx.box(Vector3(5.0, 0.12, 0.2), wood, Vector3(0, 0.5, 0.2)))
+	rack.add_child(Fx.box(Vector3(5.0, 0.12, 0.2), wood, Vector3(0, 2.0, 0.2)))
+	var ids := ["falchion", "runeblade", "greatsword", "lionfang", "arcbrand", "sunedge"]
+	for k in ids.size():
+		var sw := Swords.build(ids[k], 1.4 if ids[k] != "greatsword" else 1.8)
+		sw.rotation.x = PI / 2.0  # tip up
+		sw.position = Vector3(-2.2 + k * 0.85, 0.75, 0.3)
+		rack.add_child(sw)
+		tech.append([sw, int(Dialogue.WEAPONS[ids[k]]["tier"])])  # new blades arrive as the city rises
+	# Crossed swords over the Hollow Flagon's door
+	for s in [-1.0, 1.0]:
+		var fs := Swords.build("runeblade" if s < 0.0 else "falchion", 1.6)
+		fs.position = Vector3(16 + s * 0.2, 4.2, -9.75)
+		fs.rotation = Vector3(0, 0, s * 0.7)
+		fs.rotate_object_local(Vector3.RIGHT, PI / 2.0)
+		add_child(fs)
+	# The Watch armoury by the east gate
+	var arm := Node3D.new()
+	arm.position = Vector3(34.5, 0, -7.5)
+	add_child(arm)
+	arm.add_child(Fx.box(Vector3(2.4, 0.1, 0.5), wood, Vector3(0, 0.3, 0)))
+	for k in 4:
+		var aw := Swords.build("falchion", 1.3)
+		aw.rotation.x = PI / 2.0
+		aw.rotation.z = (k - 1.5) * 0.06
+		aw.position = Vector3(-0.9 + k * 0.6, 0.35, 0)
+		arm.add_child(aw)
+	_solid(Vector2(34.5, -7.5), Vector2(2.4, 0.6))
+	# Gladiators' graves at the Sunfield Pit: blades planted in the sand
+	var pit: Vector3 = LAIRS["pit"]
+	for k in 5:
+		var a := TAU * k / 5.0 + 0.4
+		var gs := Swords.build(["shortsword", "falchion", "lionfang", "greatsword", "runeblade"][k], 1.3)
+		gs.rotation.x = -PI / 2.0 + 0.12
+		gs.position = pit + Vector3(cos(a) * 6.5, 1.1, sin(a) * 6.5)
+		add_child(gs)
+
+
+## Compass markers: today's boss, the Lamplighter's errand (or Edda herself), and at dusk, nothing.
+func _markers() -> Array:
+	var out: Array = []
+	if dusk_state != "":
+		return out
+	if is_instance_valid(day_boss) and not day_boss.dead:
+		out.append({"pos": day_boss.position, "color": Color(1.0, 0.35, 0.25), "label": "BOSS"})
+	var q := _quest()
+	if not q.is_empty():
+		if GameState.quest_state == "":
+			out.append({"pos": Side.EDDA["spot"], "color": Color(1.0, 0.85, 0.4), "label": "EDDA"})
+		elif GameState.quest_state == "active":
+			out.append({"pos": q["where"], "color": Color(1.0, 0.85, 0.4), "label": "ERRAND"})
+	return out

@@ -26,16 +26,24 @@ static func tone() -> int:
 const WEAPONS := {
 	"shortsword": {"name": "Rusted Shortsword", "tier": 1, "dmg": 14.0, "ticks": 3, "reach": 2.3, "cost": 0,
 		"color": Color(0.6, 0.55, 0.5), "glow": 0.0, "kind": "sword", "desc": "Iron, nicked and brown. Every king starts somewhere."},
+	"borrowed": {"name": "The Borrowed Sword", "tier": 1, "dmg": 24.0, "ticks": 3, "reach": 2.5, "cost": -1,
+		"color": Color(0.82, 0.84, 0.88), "glow": 0.4, "kind": "sword", "desc": "Your father's sword. WREN on the crossguard, in a child's scratches. You never gave it back."},
+	"falchion": {"name": "Watch Falchion", "tier": 2, "dmg": 15.0, "ticks": 2, "reach": 2.3, "cost": 30,
+		"color": Color(0.75, 0.78, 0.82), "glow": 0.0, "kind": "sabre", "desc": "A broad, curved blade the Watch carries. Quick in the hand."},
 	"runeblade": {"name": "Runed Longsword", "tier": 2, "dmg": 20.0, "ticks": 3, "reach": 2.6, "cost": 40,
 		"color": Color(0.45, 0.8, 1.0), "glow": 1.5, "kind": "sword", "desc": "Old steel, new runes. They hum when it is drawn."},
 	"cogaxe": {"name": "Cog-Axe", "tier": 3, "dmg": 30.0, "ticks": 4, "reach": 2.4, "cost": 70,
 		"color": Color(0.85, 0.6, 0.25), "glow": 1.0, "kind": "axe", "desc": "A geared head that spins up as it falls."},
+	"greatsword": {"name": "Wardensteel Greatsword", "tier": 3, "dmg": 42.0, "ticks": 5, "reach": 3.1, "cost": 80,
+		"color": Color(0.55, 0.6, 0.75), "glow": 0.8, "kind": "great", "desc": "Forged from the Bridge Warden's plating. Slow, long, and final."},
 	"arcbrand": {"name": "Arcbrand", "tier": 4, "dmg": 30.0, "ticks": 2, "reach": 2.7, "cost": 110,
 		"color": Color(0.6, 0.75, 1.0), "glow": 3.0, "kind": "sword", "desc": "Lightning caught in a channel of steel. Fast."},
+	"lionfang": {"name": "Lionfang Sabre", "tier": 4, "dmg": 34.0, "ticks": 2, "reach": 2.6, "cost": 130,
+		"color": Color(1.0, 0.8, 0.45), "glow": 1.5, "kind": "sabre", "desc": "Pit-champion's steel. The crowd still cheers when it is drawn."},
 	"halberd": {"name": "Phase Halberd", "tier": 5, "dmg": 46.0, "ticks": 3, "reach": 3.6, "cost": 160,
-		"color": Color(0.75, 0.4, 1.0), "glow": 3.0, "kind": "axe", "desc": "The blade flickers half a step out of the world."},
+		"color": Color(0.75, 0.4, 1.0), "glow": 3.0, "kind": "halberd", "desc": "The blade flickers half a step out of the world."},
 	"sunedge": {"name": "Sunforged Edge", "tier": 6, "dmg": 60.0, "ticks": 2, "reach": 3.0, "cost": 230,
-		"color": Color(1.0, 0.8, 0.4), "glow": 5.0, "kind": "sword", "desc": "Plasma in a gold frame. The forge-priests call it the morning."},
+		"color": Color(1.0, 0.8, 0.4), "glow": 5.0, "kind": "plasma", "desc": "Plasma in a gold frame. The forge-priests call it the morning."},
 }
 
 

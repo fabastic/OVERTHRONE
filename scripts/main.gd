@@ -31,6 +31,7 @@ const Story := preload("res://scripts/story.gd")
 const SlamScript := preload("res://scripts/attacks/slam.gd")
 const OverworldScript := preload("res://scripts/overworld.gd")
 const Dialogue := preload("res://scripts/dialogue.gd")
+const PixTex := preload("res://scripts/pixtex.gd")
 const ATTACKS := {
 	"fireball": preload("res://scripts/attacks/fireball.gd"),
 	"volley": preload("res://scripts/attacks/fireball.gd"),
@@ -72,7 +73,7 @@ const GOLD := Color(0.95, 0.75, 0.4)
 const BLOOD := Color(0.9, 0.2, 0.18)
 
 var state := "title"
-var pixel_scales := [3, 4, 2]
+var pixel_scales := [2, 3, 4]
 var pixel_index := 0
 var quit_at_end := false
 
@@ -111,6 +112,7 @@ var flash_overlay: ColorRect
 var overlay_layer: CanvasLayer
 var overlay: Control
 var card_button: Button
+var choice_buttons: Array = []
 
 # Throne
 var preview_focus := ""
@@ -136,7 +138,9 @@ var last_chapter_shown := -1
 
 # Tutorial
 var tut_panel: PanelContainer
-var tut_label: Label
+var tut_label: RichTextLabel
+var tut_head: Label
+var hearts: Array = []
 var tut_tween: Tween
 var tut_casts := 0
 var base_time_scale := 1.0
@@ -157,6 +161,7 @@ var final_fight := false
 var final_phase := 0
 var final_bonus := 1.0
 var final_forgot := false
+var skirmish := {}             # a board skirmish in progress: {"tile": index, "title": name}
 
 
 func _ready() -> void:
@@ -180,6 +185,8 @@ func _ready() -> void:
 	overlay_layer.layer = 5
 	add_child(overlay_layer)
 	_build_overworld()
+	refresh_theme()
+	boss.cam.current = true  # the walker's camera took the viewport while Vael was built
 	for a in args:
 		if a.begins_with("--level="):
 			# Debug: start previews on a later day (memories restored up to it).
@@ -188,6 +195,7 @@ func _ready() -> void:
 				GameState.memories.append(str(c))
 			GameState.revealed = GameState.level > 5
 			boss.apply_purity(GameState.purity())
+			refresh_theme()
 	for a in args:
 		if a.begins_with("--shot="):
 			# Debug: save a screenshot after a few seconds, then quit (--shot-delay=N to change when).
@@ -200,6 +208,17 @@ func _ready() -> void:
 				get_tree().quit())
 	if args.has("--preview-day"):
 		_enter_day()
+		for a in args:
+			if a.begins_with("--pos="):
+				# Debug: stand somewhere for a screenshot: --pos=x,z,yaw_degrees
+				var v := a.trim_prefix("--pos=").split(",")
+				ow.walker.position = Vector3(float(v[0]), 0, float(v[1]))
+				ow.walker.yaw = deg_to_rad(float(v[2])) if v.size() > 2 else 0.0
+			if a == "--map":
+				ow._toggle_map.call_deferred()
+			if a.begins_with("--talk="):
+				# Debug: open a conversation straight away (for screenshots).
+				ow._talk.call_deferred(a.trim_prefix("--talk="))
 		return
 	if args.has("--preview-final"):
 		GameState.level = GameState.max_level() + 1
@@ -209,7 +228,11 @@ func _ready() -> void:
 		_show_final_intro()
 		return
 	if args.has("--preview-board"):
-		GameState.board_tile = 2 + 5 * (GameState.level - 1)
+		GameState.board_tile = 2
+		for i in board.tiles.size():
+			if board.tiles[i]["chapter"] == GameState.level - 1:
+				GameState.board_tile = i + 2
+				break
 		_enter_board()
 		return
 	if args.has("--pure"):
@@ -225,6 +248,11 @@ func _ready() -> void:
 		return
 	if args.has("--preview-heroes"):
 		_setup_hero_preview()
+		for a in args:
+			if a.begins_with("--gesture="):
+				# Debug: freeze a spell gesture half way, e.g. --gesture=fireball
+				boss.play_gesture(a.trim_prefix("--gesture="), "r")
+				boss.debug_freeze = 0.55
 		return
 	if args.has("--preview-throne") or args.has("--preview-rite"):
 		_setup_preview(args.has("--preview-rite"))
@@ -343,9 +371,10 @@ func _build_world() -> void:
 
 
 func _build_arena() -> void:
-	var floor_mat := Fx.textured(Fx.stone_texture(Color(0.24, 0.22, 0.26), Color(0.19, 0.17, 0.21), 32, 4), Vector3(9, 9, 1))
-	var wall_mat := Fx.textured(Fx.stone_texture(Color(0.2, 0.17, 0.2), Color(0.12, 0.1, 0.13), 32, 4, true), Vector3(4, 2, 1))
-	var dais_mat := Fx.textured(Fx.stone_texture(Color(0.3, 0.12, 0.12), Color(0.22, 0.08, 0.09), 16, 2), Vector3(3, 1, 1))
+	# A pixel dungeon hall: big floor flags, chunky bricks with dark mortar, a blood-red dais
+	var floor_mat := PixTex.mat(PixTex.tiles(Color(0.3, 0.28, 0.33), 101), 2.0)
+	var wall_mat := PixTex.mat(PixTex.bricks(Color(0.32, 0.28, 0.32), 102), 2.5)
+	var dais_mat := PixTex.mat(PixTex.bricks(Color(0.42, 0.16, 0.15), 103, 4, 3), 1.5)
 
 	var floor_mesh := PlaneMesh.new()
 	floor_mesh.size = Vector2(20, 20)
@@ -457,10 +486,14 @@ func _start_attempt() -> void:
 	boss_hp = boss_max
 	boss.reset_cooldowns()
 	boss.select(0)
-	if not final_fight and (GameState.checkpoint.is_empty() or (GameState.is_checkpoint_attempt() and GameState.checkpoint_attempt() != GameState.attempt)):
+	if not final_fight and skirmish.is_empty() and (GameState.checkpoint.is_empty() or (GameState.is_checkpoint_attempt() and GameState.checkpoint_attempt() != GameState.attempt)):
 		GameState.save_checkpoint()
 
-	var st := GameState.hero_stats() if not final_fight else _stranger_stats()
+	var st := GameState.hero_stats()
+	if final_fight:
+		st = _stranger_stats()
+	elif not skirmish.is_empty():
+		st = _shade_stats()
 	hero = HeroScript.new()
 	hero.game = self
 	hero.max_hp = st["hp"]
@@ -475,11 +508,14 @@ func _start_attempt() -> void:
 	hero.hero_scale = st["scale"] * (1.0 + minf(0.25, 0.03 * (GameState.attempt - 1)))
 	hero.tier = mini(GameState.level, 6)
 	hero.power = (mini(GameState.level, 6) - 1) * 0.8 + (GameState.attempt - 1) * 0.35
-	hero.descend = GameState.attempt > 1 or GameState.level >= 4
+	hero.descend = (GameState.attempt > 1 or GameState.level >= 4) and skirmish.is_empty()
 	hero.position = Vector3(randf_range(-2.0, 2.0), 0, -13.5 if not hero.descend else -11.0)
 	if final_fight:
 		_arm_stranger(hero)
 	world.add_child(hero)
+	# Boons of Vael: the Watch Whistle (and the Last Lamp, on the last night) weaken him at the start.
+	if (GameState.boons.has("whistle") and skirmish.is_empty() and not final_fight) or (final_fight and GameState.boons.has("dawnlamp")):
+		hero.hp = hero.max_hp * 0.9
 	hero.died.connect(_on_hero_died)
 	hero.struck_boss.connect(_on_hero_struck)
 
@@ -489,11 +525,16 @@ func _start_attempt() -> void:
 	_use_board_camera(false)
 	board_hud.visible = false
 	hud.visible = true
-	star_bar.visible = not final_fight
+	star_bar.visible = not final_fight and skirmish.is_empty()
 	state = "fight"
 	tick_acc = 0.0
 	auto_parry_done = false
 	_capture_mouse()
+	if not skirmish.is_empty():
+		show_message("SHADE: " + str(skirmish["title"]), "One life. Banish it.", 2.5)
+		tutorial("skirmish", "A SKIRMISH: a fight you can WIN. The shade has one life and learns nothing. Banish it for Crowns, Dread and a trophy.")
+		print("[SKIRMISH] %s hp %d" % [skirmish["title"], int(st["hp"])])
+		return
 	if final_fight:
 		show_message("THE STRANGER", "\"Let's see if you can surprise yourself.\"", 3.0)
 		print("[FINAL] stranger hp %d strike %.1f style %s" % [int(st["hp"]), st["strike"], GameState.playstyle()])
@@ -529,7 +570,7 @@ func can_cast() -> bool:
 func spawn_attack(id: String) -> bool:
 	if not can_cast() or not is_instance_valid(hero) or hero.dead:
 		return false
-	var dmg := GameState.damage_for(id) * final_bonus
+	var dmg := GameState.damage_for(id) * final_bonus * GameState.night_damage_mult()
 	GameState.cast_count += 1
 	if GameState.perks.has("surge") and GameState.cast_count % 5 == 0:
 		dmg *= 1.0 + GameState.asc_mult()
@@ -741,6 +782,9 @@ func _on_hero_died() -> void:
 	if final_fight:
 		_final_won()
 		return
+	if not skirmish.is_empty():
+		_skirmish_end(true)
+		return
 	state = "hero_fallen"
 	Sfx.play("death")
 	GameState.on_hero_death()
@@ -758,6 +802,9 @@ func _on_boss_defeated() -> void:
 	hero.celebrate()
 	if final_fight:
 		_final_lost()
+		return
+	if not skirmish.is_empty():
+		_skirmish_end(false)
 		return
 	GameState.on_boss_defeated(not hero.took_damage)
 	hurt_overlay.color.a = 0.8
@@ -781,6 +828,17 @@ func _on_mastery_milestone(_skill_id: String, _tier: int) -> void:
 # =============================================================================
 
 func _input(event: InputEvent) -> void:
+	# Cards and choices: 1-9 pick a choice, ENTER / SPACE presses the first button.
+	if is_instance_valid(overlay) and event is InputEventKey and event.pressed and not event.echo and state != "throne":
+		var idx: int = event.keycode - KEY_1
+		if idx >= 0 and idx < choice_buttons.size() and is_instance_valid(choice_buttons[idx]) and overlay.is_ancestor_of(choice_buttons[idx]):
+			get_viewport().set_input_as_handled()
+			choice_buttons[idx].pressed.emit()
+			return
+		if event.keycode in [KEY_ENTER, KEY_KP_ENTER] and is_instance_valid(card_button) and overlay.is_ancestor_of(card_button):
+			get_viewport().set_input_as_handled()
+			card_button.pressed.emit()
+			return
 	if state == "board" and not is_instance_valid(overlay):
 		if event is InputEventKey and event.pressed and not event.echo:
 			match event.keycode:
@@ -961,16 +1019,87 @@ func _make_theme() -> Theme:
 	th.set_constant("shadow_offset_x", "Label", 2)
 	th.set_constant("shadow_offset_y", "Label", 2)
 	th.set_constant("line_spacing", "Label", 4)
-	th.set_stylebox("normal", "Button", UiArt.pill_box(Color("a8302a")))
-	th.set_stylebox("hover", "Button", UiArt.pill_box(Color("e0503a")))
-	th.set_stylebox("pressed", "Button", UiArt.pill_box(Color("ff7a4a")))
-	th.set_stylebox("disabled", "Button", UiArt.pill_box(Color("3a2a2e")))
 	th.set_stylebox("focus", "Button", StyleBoxEmpty.new())
-	th.set_color("font_color", "Button", Color("fff0d0"))
-	th.set_color("font_hover_color", "Button", Color.WHITE)
-	th.set_color("font_disabled_color", "Button", Color(0.5, 0.45, 0.45))
-	th.set_stylebox("panel", "PanelContainer", UiArt.frame_box(Color("f29a2e"), Color(0.06, 0.035, 0.09, 0.94)))
+	th.set_type_variation("HudPanel", "PanelContainer")
+	th.set_type_variation("Inset", "PanelContainer")
 	return th
+
+
+## The whole UI wears the King's state (ui_art.gd "soul kit"): corrupted and thorned at first,
+## iron, then bronze, then light and gold as he remembers. Rebuilt whenever purity changes.
+func refresh_theme() -> void:
+	var p := GameState.purity()
+	var cols := UiArt.soul_colors(p)
+	for st in ["normal", "hover", "pressed", "disabled"]:
+		theme_res.set_stylebox(st, "Button", UiArt.soul_button(st, p))
+	theme_res.set_color("font_color", "Button", cols[4])
+	theme_res.set_color("font_hover_color", "Button", Color.WHITE)
+	theme_res.set_color("font_pressed_color", "Button", (cols[4] as Color).darkened(0.2))
+	theme_res.set_color("font_disabled_color", "Button", (cols[4] as Color).darkened(0.45))
+	theme_res.set_color("font_color", "Label", cols[4])
+	theme_res.set_stylebox("panel", "PanelContainer", UiArt.soul_box(p, 0.95, 16))
+	theme_res.set_stylebox("panel", "HudPanel", UiArt.soul_box(p, 0.78, 6))
+	theme_res.set_stylebox("panel", "Inset", UiArt.soul_inset(p))
+	if tut_label:
+		tut_label.add_theme_color_override("default_color", UiArt.inset_text(p))
+		tut_head.add_theme_color_override("font_color", cols[5] if p < 0.5 else Color("8a2a14"))
+	for h in hearts:
+		if is_instance_valid(h):
+			h.texture = UiArt.soul_heart(p)
+	for l in [hero_title, message_label, chapter_label, banner]:
+		if l:
+			l.add_theme_color_override("font_color", cols[5])
+	if ow:
+		ow.refresh_theme()
+
+
+## Titles take the theme's colour: blood red when corrupt, gold when pure.
+func title_color() -> Color:
+	return UiArt.soul_colors(GameState.purity())[5]
+
+
+func heart_icon() -> TextureRect:
+	var heart := TextureRect.new()
+	heart.texture = UiArt.soul_heart(GameState.purity())
+	heart.custom_minimum_size = Vector2(27, 24)
+	heart.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	heart.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	heart.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hearts.append(heart)
+	return heart
+
+
+## A HUD panel in the soul style (see refresh_theme), so text stays readable over any sky.
+func hud_panel(_margin: float = 10.0) -> PanelContainer:
+	var pc := PanelContainer.new()
+	pc.theme_type_variation = "HudPanel"
+	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return pc
+
+
+## The inset for text you read: a dark slip while he is corrupt, parchment once he heals.
+func parchment(text: String, width: float, size: int = 16, align := HORIZONTAL_ALIGNMENT_CENTER) -> PanelContainer:
+	var pc := PanelContainer.new()
+	pc.theme_type_variation = "Inset"
+	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var l := _label(text, size, UiArt.inset_text(GameState.purity()))
+	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0))
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(width, 0)
+	l.horizontal_alignment = align
+	pc.add_child(l)
+	return pc
+
+
+## A bar with its label drawn inside it (e.g. YOUR WILL 120 / 150).
+func labeled_bar(fill: Color, w: float, h: float, text_color: Color = Color.WHITE) -> Array:
+	var bar := _bar(fill, w, h)
+	var l := _label("", 16, text_color)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	bar.add_child(l)
+	l.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return [bar, l]
 
 
 func _sb(bg: Color, border: Color, margin: float = 8.0) -> StyleBoxFlat:
@@ -999,11 +1128,15 @@ func _bar(fill: Color, w: float, h: float) -> ProgressBar:
 	b.step = 0.0
 	b.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.05, 0.03, 0.05, 0.85)
-	bg.border_color = Color(0.35, 0.27, 0.2)
+	bg.bg_color = Color(0.12, 0.06, 0.03, 0.92)
+	bg.border_color = UiArt.WOOD_DARK
 	bg.set_border_width_all(2)
+	bg.expand_margin_left = 1
+	bg.expand_margin_right = 1
 	var fg := StyleBoxFlat.new()
 	fg.bg_color = fill
+	fg.border_color = fill.lightened(0.35)
+	fg.border_width_top = 2 if h >= 10 else 0
 	b.add_theme_stylebox_override("background", bg)
 	b.add_theme_stylebox_override("fill", fg)
 	return b
@@ -1049,10 +1182,13 @@ func _build_hud() -> void:
 	hud.add_child(flash_overlay)
 	flash_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	# Hero: top center
+	# Hero: top center, on a riveted board
+	var top_panel := hud_panel(8.0)
+	_anchor(top_panel, 0.5, 0.0, 0.5, 0.0, -262, 8, 262, 8)
+	top_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	hud.add_child(top_panel)
 	var top := VBoxContainer.new()
-	_anchor(top, 0.5, 0.0, 0.5, 0.0, -240, 14, 240, 130)
-	hud.add_child(top)
+	top_panel.add_child(top)
 	hero_title = _label("", 22, GOLD)
 	hero_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	top.add_child(hero_title)
@@ -1061,16 +1197,20 @@ func _build_hud() -> void:
 	star_bar = StarBarScript.new()
 	top.add_child(star_bar)
 
-	# Boss: bottom center
+	# You: bottom center, Will (with a heart) over the skill bar, on a board of their own
 	var bottom := VBoxContainer.new()
-	_anchor(bottom, 0.5, 1.0, 0.5, 1.0, -290, -176, 290, -4)
-	bottom.add_theme_constant_override("separation", 6)
+	bottom.add_theme_constant_override("separation", 2)
+	_anchor(bottom, 0.5, 1.0, 0.5, 1.0, -300, -160, 300, -4)
 	hud.add_child(bottom)
-	boss_label = _label("YOUR WILL", 16, BLOOD)
-	boss_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bottom.add_child(boss_label)
-	boss_bar = _bar(Color(0.7, 0.08, 0.1), 500, 14)
-	bottom.add_child(boss_bar)
+	var will_row := HBoxContainer.new()
+	will_row.add_theme_constant_override("separation", 6)
+	will_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	bottom.add_child(will_row)
+	will_row.add_child(heart_icon())
+	var wb := labeled_bar(Color(0.72, 0.1, 0.1), 480, 14)
+	boss_bar = wb[0]
+	boss_label = wb[1]
+	will_row.add_child(boss_bar)
 	hotbar = HotbarScript.new()
 	hotbar.boss = boss
 	bottom.add_child(hotbar)
@@ -1092,7 +1232,7 @@ func _build_hud() -> void:
 	level_label.visible = false
 
 	# Right: what the hero knows about each equipped skill.
-	var insight_panel := PanelContainer.new()
+	var insight_panel := hud_panel()
 	_anchor(insight_panel, 1, 0, 1, 0, -236, 12, -12, 60)
 	hud.add_child(insight_panel)
 	insight_box = VBoxContainer.new()
@@ -1174,7 +1314,12 @@ func _update_hud() -> void:
 	level_label.text = "CHAPTER %d / %d  ·  CROWNS %d" % [GameState.level, GameState.max_level(), GameState.crowns]
 	dread_label.text = "%d" % int(GameState.dread)
 	if is_instance_valid(hero):
-		hero_title.text = "THE STRANGER  ·  THE LAST NIGHT" if final_fight else "%s  ·  FIGHT %d" % [L["title"], GameState.attempt]
+		if final_fight:
+			hero_title.text = "THE STRANGER  ·  THE LAST NIGHT"
+		elif not skirmish.is_empty():
+			hero_title.text = "SHADE: %s" % skirmish["title"]
+		else:
+			hero_title.text = "%s  ·  FIGHT %d" % [L["title"], GameState.attempt]
 		hero_bar.value = hero.hp / hero.max_hp
 	boss_bar.value = boss_hp / boss_max
 	boss_label.text = "YOUR WILL  %d / %d" % [int(ceil(boss_hp)), int(boss_max)]
@@ -1211,7 +1356,9 @@ func _new_overlay(alpha: float = 0.82) -> Control:
 	return o
 
 
-func _show_card(title: String, body: String, button_text: String, on_press: Callable, title_color: Color = GOLD) -> void:
+func _show_card(title: String, body: String, button_text: String, on_press: Callable, title_color: Color = Color.TRANSPARENT) -> void:
+	if title_color == Color.TRANSPARENT:
+		title_color = self.title_color()
 	var o := _new_overlay()
 	var center := CenterContainer.new()
 	o.add_child(center)
@@ -1226,11 +1373,8 @@ func _show_card(title: String, body: String, button_text: String, on_press: Call
 	tl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	tl.custom_minimum_size = Vector2(700, 0)
 	vb.add_child(tl)
-	var bl := _label(body, 18)
-	bl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	bl.custom_minimum_size = Vector2(700, 0)
-	bl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(bl)
+	if body != "":
+		vb.add_child(parchment(body, 680))
 	var b := _button(button_text, on_press, 260)
 	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	vb.add_child(b)
@@ -1258,19 +1402,22 @@ func _show_choice(title: String, body: String, icon_id: String, options: Array) 
 		ic.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 		ic.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		vb.add_child(ic)
-	var tl := _label(title, 32, GOLD)
+	var tl := _label(title, 32 if title.length() <= 26 else 24, title_color())
 	tl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tl.custom_minimum_size = Vector2(660, 0)
 	vb.add_child(tl)
-	var bl := _label(body, 16)
-	bl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	bl.custom_minimum_size = Vector2(640, 0)
-	bl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(bl)
+	vb.add_child(parchment(body, 640))
 	var first := true
-	for opt in options:
-		var b := _button(str(opt[0]), opt[1], 560)
-		b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	choice_buttons.clear()
+	for k in options.size():
+		var opt: Array = options[k]
+		# Number keys pick a choice: "1. Buy warm bread"
+		var b := _button("%d.  %s" % [k + 1, str(opt[0])], opt[1], 620)
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.size_flags_horizontal = Control.SIZE_FILL
 		vb.add_child(b)
+		choice_buttons.append(b)
 		if first:
 			card_button = b
 			first = false
@@ -1342,6 +1489,7 @@ func _after_prestige() -> void:
 	var ch: Dictionary = Story.CHAPTERS[chapter]
 	GameState.restore_memory(chapter, ch["relic"])
 	GameState.prestige()
+	refresh_theme()  # the UI lightens with every memory
 	var relic: Dictionary = GameState.RELICS[ch["relic"]]
 	var body: String = ch["memory"] + "\n\nRELIC RESTORED: %s  (%s)" % [relic["name"].to_upper(), relic["desc"]]
 	if chapter + 1 < Story.CHAPTERS.size():
@@ -1575,6 +1723,7 @@ func _show_ending() -> void:
 			get_tree().quit()
 			return
 		GameState.reset_run()
+		refresh_theme()
 		night_shown = -1
 		fog_revealed = 0
 		_show_title())
@@ -1769,9 +1918,73 @@ func _on_tile(td: Dictionary) -> void:
 			_resolve_effects("TREASURE", data["effect"])
 		"altar":
 			_show_altar(data["text"])
+		"skirmish":
+			var ti: int = GameState.board_tile
+			if GameState.skirmish_done.get(ti, "") == "won":
+				narrate("The field is quiet. The shade I banished does not come back.")
+				return
+			_show_choice(str(data["title"]), str(data["text"]) + "\n\nWIN: Crowns, Dread, a reforged skill and a TROPHY (+4% damage to every challenger).\nLOSE: you lose nothing but the prize.", "sweep",
+				[["FIGHT THE SHADE", _start_skirmish.bind(ti, str(data["title"]))], ["PASS BY", _enter_board]])
 		"demon":
 			narrate(Story.CHAPTERS[c].get("arrive", "Someone waits on this square."))
 			get_tree().create_timer(1.4).timeout.connect(_show_level_intro)
+
+
+# =============================================================================
+# Skirmishes: fights on the board you can WIN (a Shade of the chapter's past, one life)
+# =============================================================================
+
+func _start_skirmish(tile: int, title: String) -> void:
+	skirmish = {"tile": tile, "title": title}
+	_start_attempt()
+
+
+func _shade_stats() -> Dictionary:
+	var H: Dictionary = GameState.hero_data()
+	var shade := Color(0.3, 0.2, 0.45)
+	return {
+		"hp": float(H["hp"]) * 1.8,
+		"strike": float(H["strike"]) * 0.7,
+		"speed": float(H["speed"]) * 0.9,
+		"windup": float(H["windup"]) + 0.1,
+		"armor": Color(H["armor"]).darkened(0.45).lerp(shade, 0.4),
+		"cape": Color(0.1, 0.06, 0.14),
+		"form": H["form"],
+		"scale": 0.95,
+	}
+
+
+func _skirmish_end(won: bool) -> void:
+	state = "skirmish_end"
+	var tile: int = skirmish["tile"]
+	var title: String = skirmish["title"]
+	skirmish = {}
+	for n in get_tree().get_nodes_in_group("attacks"):
+		n.queue_free()
+	# The shade teaches the challenger nothing.
+	GameState.attempt_exposure = {}
+	GameState.temp = {}
+	GameState.eclipse_active = false
+	set_darkness(false)
+	if won:
+		GameState.skirmish_done[tile] = "won"
+		GameState.trophies += 1
+		var cr := 6 * GameState.level
+		var dr := 30.0 + 10.0 * GameState.level
+		GameState.crowns += cr
+		GameState.dread += dr
+		var rank := GameState.apply_effect("rank")
+		Sfx.play("crown")
+		print("[SKIRMISH] won %s, trophies %d" % [title, GameState.trophies])
+		show_message("SHADE BANISHED", "", 2.0)
+		get_tree().create_timer(2.2).timeout.connect(func():
+			_show_card("SHADE BANISHED", "%s dissolves into the paper.\n\n+%d CROWNS  ·  +%d DREAD\n%s\nTROPHY %d: every challenger takes +%d%% damage from you." % [title, cr, int(dr), rank, GameState.trophies, 4 * GameState.trophies], "BACK TO THE BOARD", _enter_board))
+	else:
+		GameState.skirmish_done[tile] = "lost"
+		print("[SKIRMISH] lost %s" % title)
+		show_message("THE SHADE PREVAILS", "", 2.0)
+		get_tree().create_timer(2.2).timeout.connect(func():
+			_show_card("THE SHADE PREVAILS", "%s stands over you, then fades. Nothing is lost but the prize." % title, "BACK TO THE BOARD", _enter_board, BLOOD))
 
 
 func _resolve_effects(title: String, effects: String) -> void:
@@ -1825,14 +2038,25 @@ func _build_tutorial() -> void:
 	tut_panel = PanelContainer.new()
 	tut_panel.theme = theme_res
 	tut_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_anchor(tut_panel, 0, 0.38, 0, 0.38, 16, 0, 380, 0)
+	tut_panel.theme_type_variation = "Inset"
+	_anchor(tut_panel, 0, 0, 0, 0, 14, 128, 344, 128)
 	layer.add_child(tut_panel)
 	var vb := VBoxContainer.new()
 	tut_panel.add_child(vb)
-	vb.add_child(_label("GUIDANCE", 16, GOLD))
-	tut_label = _label("", 16, TEXT)
+	tut_head = _label("GUIDANCE", 16, Color("8a2a14"))
+	tut_head.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0))
+	vb.add_child(tut_head)
+	# A RichTextLabel that sizes itself to its wrapped text (a wrapped Label does not, in a container)
+	tut_label = RichTextLabel.new()
+	tut_label.fit_content = true
+	tut_label.scroll_active = false
 	tut_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	tut_label.custom_minimum_size = Vector2(330, 0)
+	tut_label.custom_minimum_size = Vector2(298, 0)
+	tut_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tut_label.add_theme_font_override("normal_font", UiArt.pixel_font())
+	tut_label.add_theme_font_size_override("normal_font_size", 16)
+	tut_label.add_theme_color_override("default_color", UiArt.inset_text(GameState.purity()))
+	tut_label.add_theme_constant_override("line_separation", 4)
 	vb.add_child(tut_label)
 	tut_panel.modulate.a = 0.0
 

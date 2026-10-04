@@ -5,7 +5,9 @@ extends RefCounted
 ## each one is a self he locked away. The player only learns this slowly, one memory at a time.
 ## (Internally the challenger tile is still called "demon".)
 ##
-## Tile types:  story · event (choice) · treasure · altar (classes) · demon
+## Tile types:  story · event (choice) · treasure · altar (classes) · skirmish · demon
+## A SKIRMISH is a fight on the board you can WIN: a Shade of the chapter's past, with one life.
+## Winning pays out Crowns, Dread, a reforged skill and a TROPHY (+4% damage to every challenger).
 
 const CHAPTERS := [
 	{
@@ -19,6 +21,7 @@ const CHAPTERS := [
 				"options": [["Read the names (+1 memory fragment, +6 Crowns)", "fragment|crowns:6"], ["Drop a coin in (+40 Dread next fight)", "dread:40"]]},
 			{"type": "treasure", "text": "A child's toy chest, half buried in ash.", "effect": "crowns:12"},
 			{"type": "story", "text": "Smoke on the horizon. I was not here when it burned. I was off somewhere, proving I was brave."},
+			{"type": "skirmish", "title": "THE SCARECROW KNIGHT", "text": "A scarecrow stands in the burned field in a rusted helm and a child's cape. When you look at it, it lifts a stick like a sword. It was the first thing you ever fought."},
 			{"type": "demon"},
 		],
 		"memory_title": "THE BOY WITH THE BORROWED SWORD",
@@ -36,6 +39,7 @@ const CHAPTERS := [
 			{"type": "event", "title": "THE DESERTER'S CAMP", "text": "Cold ashes and a ring of helmets. My men waited for me here, once, while I decided whether to obey.",
 				"options": [["Wear a helmet (a free skill from your classes)", "skill"], ["Burn the banner (+14 Crowns, but the next demon stands firmer)", "crowns:14|curse:0.08"]]},
 			{"type": "story", "text": "They called me traitor. I called it mercy. Both of us were right."},
+			{"type": "skirmish", "title": "THE DESERTER'S SHADE", "text": "On the bridge stands a knight made of rain, still holding the line you walked away from. He will not let you cross without a fight."},
 			{"type": "demon"},
 		],
 		"memory_title": "THE OATH YOU BROKE",
@@ -53,6 +57,7 @@ const CHAPTERS := [
 			{"type": "event", "title": "THE EMPTY BOX SEAT", "text": "The best seat in the arena. Whoever sat here decided who lived. A purple cushion, still warm.",
 				"options": [["Sit (+1 memory fragment, Reforge a skill)", "fragment|rank"], ["Tear it down (+18 Crowns)", "crowns:18"]]},
 			{"type": "story", "text": "I learned to love the roar more than the faces making it."},
+			{"type": "skirmish", "title": "THE CROWD'S CHAMPION", "text": "The empty arena roars anyway. A champion of sand and noise steps out of the gate, wearing a laurel. The crowd wants blood. Yours, or his."},
 			{"type": "demon"},
 		],
 		"memory_title": "THE ROAR",
@@ -70,6 +75,7 @@ const CHAPTERS := [
 			{"type": "event", "title": "THE CONFESSIONAL", "text": "A curtained booth. Someone is waiting on the other side, breathing slowly.",
 				"options": [["Confess (+2 memory fragments)", "fragment|fragment"], ["Hear their confession instead (+60 Dread next fight)", "dread:60"]]},
 			{"type": "story", "text": "Every sinner I judged had my face."},
+			{"type": "skirmish", "title": "THE PENITENT FLAME", "text": "A figure of ash and candle-smoke kneels in the aisle, still praying. It rises when you pass. Brother Ashe never forgave anyone. Least of all this."},
 			{"type": "demon"},
 		],
 		"memory_title": "THE VOW",
@@ -87,6 +93,7 @@ const CHAPTERS := [
 			{"type": "event", "title": "THE GOLDEN MASK", "text": "A saint's death mask, beaten from gold. The inside is black with rot.",
 				"options": [["Wear it (a free skill and +20 Crowns, but the next demon stands firmer)", "skill|crowns:20|curse:0.1"], ["Shatter it (+1 memory fragment, +12 Crowns)", "fragment|crowns:12"]]},
 			{"type": "story", "text": "That is when the crown first whispered. It said: they already worship you. Why not rule?"},
+			{"type": "skirmish", "title": "THE HOLLOW PILGRIM", "text": "A pilgrim with no face walks the heights, carrying a saint's mask in its hands. It offers the mask to you. When you refuse, it draws a knife."},
 			{"type": "demon"},
 		],
 		"memory_title": "THE ROT UNDER GOLD",
@@ -104,6 +111,7 @@ const CHAPTERS := [
 			{"type": "event", "title": "THE TYRANT'S THRONE", "text": "An empty throne, identical to yours. The cushion still holds the shape of someone.",
 				"options": [["Sit (+40 Crowns)", "crowns:40"], ["Kneel before it (+2 memory fragments, a free skill)", "fragment|fragment|skill"]]},
 			{"type": "story", "text": "One part of me never stopped believing the morning would come. I locked him away the highest."},
+			{"type": "skirmish", "title": "THE CROWN'S ECHO", "text": "At the foot of the spire, the crown has left a copy of itself: a knight of black glass and whispers. It does not speak with its mouth."},
 			{"type": "demon"},
 		],
 		"memory_title": "THE HOLLOW KING",

@@ -13,6 +13,7 @@ signal died
 signal struck_boss(damage: float)
 
 const Fx := preload("res://scripts/fx.gd")
+const PixTex := preload("res://scripts/pixtex.gd")
 const STRIKE_POINT := Vector3(0, 0, -2.15)
 const BOUND_X := 6.5
 const BOUND_Z_MIN := -14.0
@@ -171,7 +172,9 @@ func _ready() -> void:
 # --- Construction -------------------------------------------------------------
 
 func _m(color: Color) -> StandardMaterial3D:
-	var m := Fx.mat(color)
+	# Pixel-art surfaces: a grain of light and shade over the colour (mapped to the model, so it
+	# moves with him). Emission stays free for the white hit-flash.
+	var m := PixTex.mat(PixTex.grain(color, int(color.r * 50 + color.b * 20)), 0.3, false)
 	m.emission_enabled = true
 	m.emission = Color.WHITE
 	m.emission_energy_multiplier = 0.0
@@ -277,6 +280,15 @@ func _build_head(armor: Material, armor_hi: Material, cloth: Material, gold: Mat
 		var skin := _m(Color(0.86, 0.68, 0.52))
 		var hair := _m(Color(0.35, 0.2, 0.1))
 		head.add_child(Fx.box(Vector3(0.22, 0.24, 0.22), skin, Vector3(0, 0.12, 0)))
+		# A painted pixel face: the boy who borrowed his father's sword
+		var fq := MeshInstance3D.new()
+		var qm := QuadMesh.new()
+		qm.size = Vector2(0.22, 0.24)
+		fq.mesh = qm
+		fq.material_override = PixTex.decal(PixTex.face(Color(0.86, 0.68, 0.52), Color(0.35, 0.2, 0.1), Color(0.3, 0.45, 0.7), "", 3))
+		fq.position = Vector3(0, 0.12, -0.112)
+		fq.rotation.y = PI
+		head.add_child(fq)
 		head.add_child(Fx.box(Vector3(0.25, 0.08, 0.25), hair, Vector3(0, 0.27, 0.01)))
 		head.add_child(Fx.box(Vector3(0.25, 0.16, 0.06), hair, Vector3(0, 0.18, 0.11)))
 		for s in [-1.0, 1.0]:
