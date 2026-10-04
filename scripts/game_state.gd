@@ -182,6 +182,18 @@ var RELICS := {
 	"dawn": {"name": "Ember of Dawn", "desc": "Everything, a little brighter"},
 }
 
+# Boons of Vael: won by day in the Lamplighter's story (sidestory.gd). Kept for the whole run,
+# and every one of them helps you against the challengers at night.
+var BOONS := {
+	"lamp": {"name": "Edda's First Lamp", "desc": "Your skills deal +10% damage to challengers"},
+	"whistle": {"name": "Watch Whistle", "desc": "Every challenger fight starts with him at 90% vitality"},
+	"button": {"name": "Pip's Lucky Button", "desc": "+15 Dread every time a challenger falls"},
+	"candle": {"name": "Ivy's Vigil Candle", "desc": "Parry window +0.05s"},
+	"lens": {"name": "Liore's Clear Lens", "desc": "Challengers learn 10% slower"},
+	"heart": {"name": "The Stolen Lamp-Heart", "desc": "+40 max Will"},
+	"dawnlamp": {"name": "The Last Lamp of Vael", "desc": "+10% damage, and the Stranger starts at 90%"},
+}
+
 # Eternity: permanent upgrades bought with Crowns. They survive every prestige and every new run.
 var ETERNITY := {
 	"colossus": {"name": "Colossus", "desc": "+20% max Will", "costs": [8, 16, 28, 44, 64]},
@@ -240,6 +252,14 @@ var revealed := false        # the player knows who the Stranger is
 var style := {"casts": {}, "parries": 0, "grazes": 0, "hits": 0, "total_casts": 0, "fight_time": 0.0}
 var fight_parries := 0
 var fight_grazes := 0
+# The Lamplighter's story, secrets and lore (all per run)
+var boons := {}
+var quest_step := 0            # how many of the Lamplighter's days are done
+var quest_state := ""          # today's step: "" (not taken) | "active" | "won"
+var secrets := {}              # easter eggs found
+var pages := {}                # pages of the Chronicle of Vael found
+var trophies := 0              # board skirmishes won: each one, +4% damage to challengers
+var skirmish_done := {}        # board tile index -> "won" | "lost"
 
 # Per-hero stats
 var level_damage := 0.0
@@ -278,6 +298,13 @@ func reset_run() -> void:
 	tonight_will = 0.0
 	revealed = false
 	day_time = 0.0
+	boons = {}
+	quest_step = 0
+	quest_state = ""
+	secrets = {}
+	pages = {}
+	trophies = 0
+	skirmish_done = {}
 	style = {"casts": {}, "parries": 0, "grazes": 0, "hits": 0, "total_casts": 0, "fight_time": 0.0}
 	memories = []
 	relics = []
@@ -394,6 +421,16 @@ func damage_for(id: String) -> float:
 	return d
 
 
+## Your damage against the challengers at night (boons and trophies from the day and the board).
+func night_damage_mult() -> float:
+	var m := 1.0 + 0.04 * trophies
+	if boons.has("lamp"):
+		m *= 1.1
+	if boons.has("dawnlamp"):
+		m *= 1.1
+	return m
+
+
 func cooldown_for(id: String) -> float:
 	var c: float = SKILLS[id]["cooldown"]
 	if perks.has("haste"):
@@ -405,7 +442,7 @@ func cooldown_for(id: String) -> float:
 
 func boss_max_hp() -> float:
 	var hp := 150.0 + (40.0 * asc_mult() if perks.has("vigor") else 0.0) + (40.0 if active_class == "bone" else 0.0) + (80.0 * asc_mult() if perks.has("colossal") else 0.0)
-	hp += 25.0 * deeds.size() + tonight_will
+	hp += 25.0 * deeds.size() + tonight_will + (40.0 if boons.has("heart") else 0.0)
 	hp *= 1.0 + 0.2 * eternity_level("colossus")
 	if has_relic("ashes"):
 		hp *= 1.25
@@ -419,7 +456,7 @@ func lean_speed() -> float:
 # --- Parry --------------------------------------------------------------------
 
 func parry_window() -> float:
-	return 0.24 + (0.1 * asc_mult() if perks.has("talons") else 0.0) + 0.08 * eternity_level("reflex") + (0.06 if has_relic("ring") else 0.0)
+	return 0.24 + (0.1 * asc_mult() if perks.has("talons") else 0.0) + 0.08 * eternity_level("reflex") + (0.06 if has_relic("ring") else 0.0) + (0.05 if boons.has("candle") else 0.0)
 
 
 ## Your parry is up for this many ticks (it opens on the tick after you press it).
@@ -656,6 +693,10 @@ func on_hero_death() -> void:
 		rate *= 0.8
 	if has_relic("censer"):
 		rate *= 0.9
+	if boons.has("lens"):
+		rate *= 0.9
+	if boons.has("button"):
+		dread += 15.0
 	pending_lessons = []
 	for id in attempt_exposure:
 		var before := tier(base_mastery(id))
@@ -695,6 +736,12 @@ func _compute_crowns() -> void:
 		last_crowns.append(["%s EARNED" % "★".repeat(last_stars), 8 * last_stars * level])
 	if day_boss_slain:
 		last_crowns.append(["A DEED DONE BY DAY", 6 * level])
+	if quest_state == "won":
+		last_crowns.append(["THE LAMPLIGHTER'S THANKS", 5 * level])
+	if not boons.is_empty():
+		last_crowns.append(["BOONS OF VAEL: %d" % boons.size(), 2 * boons.size() * level])
+	if trophies > 0:
+		last_crowns.append(["SHADES BANISHED: %d" % trophies, 3 * trophies])
 	if level_flawless:
 		last_crowns.append(["HE NEVER BLED (FLAWLESS)", 10])
 	last_crowns_total = 0
@@ -716,6 +763,9 @@ func prestige() -> void:
 	day_boss_slain = false
 	tonight_will = 0.0
 	day_time = 0.0
+	if quest_state == "won":
+		quest_step += 1
+	quest_state = ""
 	_new_hero_reset()
 	print("[PRESTIGE] now L%d, crowns %d" % [level, crowns])
 

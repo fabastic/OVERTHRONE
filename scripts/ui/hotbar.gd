@@ -1,5 +1,5 @@
 extends Control
-## The in-fight skill bar: diamond slots with pixel icons, a cooldown drain under each,
+## The in-fight skill bar: inset wooden slots with pixel icons, a cooldown drain under each,
 ## the selected slot raised and gilded, the selected skill's name underneath, and your
 ## PARRY (right mouse) on the far right: gold while the guard is up, draining on cooldown.
 
@@ -39,14 +39,13 @@ func _draw() -> void:
 		var ready := has and left <= 0.0
 		var border := Color("ffe08a") if sel else (Color("f29a2e") if ready else Color("5a3a34"))
 		var inner := Color("f29a2e") if sel else (Color("7a2a20") if ready else Color("33222a"))
-		draw_texture_rect(UiArt.diamond(DIA, border, Color("2a1626"), inner), Rect2(cx - half, cy - half, DIA * S, DIA * S), false)
+		draw_texture_rect(UiArt.soul_slot(DIA, sel, ready, GameState.purity()), Rect2(cx - half, cy - half, DIA * S, DIA * S), false)
 		_str(Vector2(cx - 30, cy - half - 20), str(i + 1), 16, Color("ffd27a") if sel else Color("9a8a9a"), 60)
 		if not has:
 			continue
 		draw_texture_rect(UiArt.icon(id), Rect2(cx - 18, cy - 18, 36, 36), false, Color.WHITE if ready else Color(0.4, 0.35, 0.45))
 		if not ready:
-			var frac := clampf(left / GameState.cooldown_for(id), 0.0, 1.0)
-			_drain(cx, cy + half + 3, frac)
+			_drain(cx, cy + half + 3, boss.cooldown_frac(id))
 			_str(Vector2(cx - 30, cy - 7), "%.1f" % left, 16, Color.WHITE, 60)
 
 	# Parry
@@ -59,8 +58,8 @@ func _draw() -> void:
 	var pi := Color("ffd27a") if up else (Color("7a5a20") if pready else Color("33222a"))
 	if up:
 		var g := DIA + 6
-		draw_texture_rect(UiArt.diamond(g, pb, pb, pb), Rect2(px - g * S * 0.5, py - g * S * 0.5, g * S, g * S), false, Color(1, 1, 1, 0.4))
-	draw_texture_rect(UiArt.diamond(DIA, pb, Color("2a1626"), pi), Rect2(px - half, py - half, DIA * S, DIA * S), false)
+		draw_rect(Rect2(px - g * S * 0.5, py - g * S * 0.5, g * S, g * S), Color(1.0, 0.9, 0.6, 0.35))  # the guard is up
+	draw_texture_rect(UiArt.soul_slot(DIA, up, pready, GameState.purity()), Rect2(px - half, py - half, DIA * S, DIA * S), false)
 	draw_texture_rect(UiArt.icon("parry"), Rect2(px - 18, py - 18, 36, 36), false, Color.WHITE if pready or up else Color(0.4, 0.35, 0.45))
 	_str(Vector2(px - 40, py - half - 20), "RMB", 16, Color("ffd27a") if pready else Color("9a8a9a"), 80)
 	if not pready and not up:
