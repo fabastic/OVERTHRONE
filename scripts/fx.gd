@@ -15,6 +15,53 @@ static func mat(color: Color, emission: float = 0.0, alpha: float = 1.0) -> Stan
 	return m
 
 
+## An impact: a shockwave ring that races out along the ground, a puff of dark smoke rising,
+## a white-hot core flash and embers. Frees itself.
+static var _vig: ShaderMaterial
+
+
+## The material for a hurt overlay ColorRect: red only toward the screen edges.
+static func vignette_material() -> ShaderMaterial:
+	if _vig == null:
+		_vig = ShaderMaterial.new()
+		_vig.shader = load("res://scripts/vignette.gdshader")
+	return _vig
+
+
+static func impact(parent: Node, pos: Vector3, color: Color, s: float = 1.0) -> void:
+	var root := Node3D.new()
+	parent.add_child(root)
+	root.global_position = pos
+	var ring_m := TorusMesh.new()
+	ring_m.inner_radius = 0.85
+	ring_m.outer_radius = 1.0
+	ring_m.rings = 24
+	ring_m.ring_segments = 4
+	var ring := MeshInstance3D.new()
+	ring.mesh = ring_m
+	var rm := mat(color, 4.0, 0.8)
+	ring.material_override = rm
+	ring.scale = Vector3(0.2, 0.15, 0.2) * s
+	root.add_child(ring)
+	var core := sphere(0.35 * s, mat(color.lightened(0.6), 8.0, 0.9))
+	root.add_child(core)
+	var smoke := particles(color.darkened(0.7), int(8 * s) + 4, 0.9, 1.2, 0.18 * s, true)
+	smoke.gravity = Vector3(0, 1.5, 0)
+	(smoke.mesh as BoxMesh).material = mat(color.darkened(0.75), 0.0, 0.55)
+	root.add_child(smoke)
+	var embers := particles(color.lightened(0.3), int(10 * s), 0.7, 5.0 * s, 0.04, true)
+	embers.gravity = Vector3(0, -6.0, 0)
+	root.add_child(embers)
+	var tw := root.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(ring, "scale", Vector3(2.2, 0.15, 2.2) * s, 0.35).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
+	tw.tween_property(rm, "albedo_color:a", 0.0, 0.35)
+	tw.tween_property(core, "scale", Vector3.ONE * 1.8, 0.15)
+	tw.tween_callback(core.hide).set_delay(0.15)
+	tw.chain().tween_interval(0.8)
+	tw.chain().tween_callback(root.queue_free)
+
+
 static func box(size: Vector3, material: Material, pos: Vector3 = Vector3.ZERO) -> MeshInstance3D:
 	var bm := BoxMesh.new()
 	bm.size = size

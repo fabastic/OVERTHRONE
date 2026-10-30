@@ -241,7 +241,8 @@ var day_time := 0.0          # 0..1 through the day
 var deeds: Array[String] = []  # day bosses slain (ids), whole run
 var day_boss_slain := false
 var weapon := "shortsword"   # the blade you carry by day (dialogue.gd WEAPONS)
-var weapon_tune := 0         # aether tuning from Liore (+20% weapon damage each)
+var weapon_tune := 0         # upgrade level of the blade you carry (+20% damage each, 0..3)
+var weapons := {"shortsword": 0}  # INVENTORY: every blade you own -> its upgrade level (0..3)
 var kindness := 0            # dread given away / tribute refused
 var cruelty := 0             # tribute demanded
 var npc_met := {}
@@ -291,6 +292,7 @@ func reset_run() -> void:
 	day_boss_slain = false
 	weapon = "shortsword"
 	weapon_tune = 0
+	weapons = {"shortsword": 0}
 	kindness = 0
 	cruelty = 0
 	npc_met = {}
@@ -460,8 +462,9 @@ func parry_window() -> float:
 
 
 ## Your parry is up for this many ticks (it opens on the tick after you press it).
+## Your parry is up for ONE tick. Only a stack of window bonuses (0.5s or more) buys a second.
 func parry_ticks() -> int:
-	return maxi(1, ceili(parry_window() / TICK - 0.01))
+	return 2 if parry_window() >= 0.5 else 1
 
 
 func parry_cd_ticks() -> int:
@@ -533,7 +536,7 @@ func graze_taken_base(afterimage: bool) -> float:
 
 
 func parry_cooldown() -> float:
-	return 0.9 * (maxf(0.3, 1.0 - 0.4 * asc_mult()) if perks.has("bastion") else 1.0)
+	return 1.75 * (maxf(0.3, 1.0 - 0.4 * asc_mult()) if perks.has("bastion") else 1.0)
 
 
 func lean_limit() -> float:
@@ -584,7 +587,7 @@ func hero_poise() -> float:
 
 ## How far you can lean away mid-swing before he still connects. Later heroes track you better.
 func whiff_tolerance() -> float:
-	return 1.2 + 0.2 * (level - 1) + 0.06 * (attempt - 1)
+	return 1.6 + 0.25 * (level - 1) + 0.1 * (attempt - 1)
 
 
 # --- Mastery (per-fight exponential curve) -------------------------------------
@@ -868,29 +871,144 @@ func can_pull() -> bool:
 
 ## Spend Dread on a rite. Rarity comes from the minigame. Duplicates reforge the skill:
 ## +1 rank and he forgets two fights' worth of what he knew about it.
+## Roll a chest's rarity: 62% common, 30% rare, 8% legendary (Favored Fate widens the top two).
+func roll_rarity() -> int:
+	var w := 1.0 + 0.3 * eternity_level("fate")
+	var r := randf()
+	if r < 0.08 * w:
+		return 2
+	if r < (0.08 + 0.30) * w:
+		return 1
+	return 0
+
+
+## Open a summoning chest. The rarity is rolled first; then the POOL decides what you get:
+##   1. a skill you do not own, of that rarity (rank I)
+##   2. if that rarity has run dry: a skill you do not own of a LOWER rarity, raised in rank by the
+##      difference (a legendary chest gives a rank II rare or a rank III common), or a higher one at rank I
+##   3. if you own everything: your lowest-ranked skill is reforged, by more ranks the rarer the chest
+## So nothing repeats while anything is left, and a rare roll is never wasted.
 func pull(rarity: int) -> Dictionary:
 	dread -= pull_cost()
 	free_rite = false
-	var pool: Array[String] = []
-	for id in SKILLS:
-		if SKILLS[id]["rarity"] == rarity and class_unlocked(class_of(id)):
-			pool.append(id)
-	if pool.is_empty():
-		for id in SKILLS:
-			if class_unlocked(class_of(id)):
-				pool.append(id)
-	var id: String = pool.pick_random()
-	var dup := owned.has(id)
-	if dup:
-		owned[id] = mini(owned[id] + 1, MAX_RANK)
-		fights[id] = maxf(0.0, fights.get(id, 0.0) - 2.0)
-	else:
-		owned[id] = 1
+	var unowned := {0: [], 1: [], 2: []}
+	for sid in SKILLS:
+		if class_unlocked(class_of(sid)) and not owned.has(sid):
+			unowned[int(SKILLS[sid]["rarity"])].append(sid)
+	var id := ""
+	var r_item := rarity
+	var order: Array = [rarity]
+	for d in [1, 2]:
+		if rarity - d >= 0:
+			order.append(rarity - d)
+	for d in [1, 2]:
+		if rarity + d <= 2:
+			order.append(rarity + d)
+	for r in order:
+		if not (unowned[r] as Array).is_empty():
+			r_item = r
+			id = (unowned[r] as Array).pick_random()
+			break
+	var bonus := maxi(0, rarity - r_item)
+	var dup := false
+	if id != "":
+		owned[id] = mini(1 + bonus, MAX_RANK)
 		if loadout.size() < loadout_size():
 			loadout.append(id)
+	else:
+		# Everything is yours: reforge the weakest, prefer the chest's own rarity.
+		var best := ""
+		for sid in owned:
+			if owned[sid] >= MAX_RANK:
+				continue
+			if best == "" or owned[sid] < owned[best] or (owned[sid] == owned[best] and int(SKILLS[sid]["rarity"]) == rarity):
+				best = sid
+		if best == "":
+			crowns += 5 + 5 * rarity
+			print("[PULL] everything is mastered: +%d crowns" % (5 + 5 * rarity))
+			return {"id": "fireball", "dup": true, "rank": MAX_RANK, "rarity": rarity, "item_rarity": 0, "maxed": true}
+		id = best
+		dup = true
+		r_item = int(SKILLS[id]["rarity"])
+		owned[id] = mini(owned[id] + 1 + maxi(0, rarity - r_item), MAX_RANK)
+		fights[id] = maxf(0.0, fights.get(id, 0.0) - 2.0)
 	_remember(id)
-	print("[PULL] %s -> %s rank %d (dup=%s)" % [RARITY_NAMES[rarity], id, owned[id], dup])
-	return {"id": id, "dup": dup, "rank": owned[id], "rarity": rarity}
+	print("[PULL] %s chest -> %s (%s) rank %d (dup=%s)" % [RARITY_NAMES[rarity], id, RARITY_NAMES[r_item], owned[id], dup])
+	return {"id": id, "dup": dup, "rank": owned[id], "rarity": rarity, "item_rarity": r_item}
+
+
+## Put a skill into a loadout slot of your choosing. If it is already equipped elsewhere the two
+## swap places; a slot past the end simply appends.
+func place_in_slot(id: String, slot: int) -> void:
+	if not owned.has(id):
+		return
+	slot = clampi(slot, 0, loadout_size() - 1)
+	var from := loadout.find(id)
+	if slot >= loadout.size():
+		if from >= 0:
+			loadout.remove_at(from)
+		loadout.append(id)
+		return
+	if from >= 0:
+		var other: String = loadout[slot]
+		loadout[slot] = id
+		loadout[from] = other
+	else:
+		loadout[slot] = id
+
+
+func unequip(id: String) -> void:
+	if loadout.has(id) and loadout.size() > 1:
+		loadout.erase(id)
+
+
+# --- Swords: an inventory of blades, upgraded with Crowns ---------------------------------------
+
+const WEAPON_MAX_LEVEL := 3
+
+
+func give_weapon(id: String) -> bool:
+	var fresh := not weapons.has(id)
+	if fresh:
+		weapons[id] = 0
+	return fresh
+
+
+func equip_weapon(id: String) -> void:
+	if weapons.has(id):
+		weapon = id
+		weapon_tune = int(weapons[id])
+
+
+## Crowns to raise a blade one level (each level reshapes it and adds +20% damage). -1 at max.
+func weapon_upgrade_cost(id: String) -> int:
+	var lv := int(weapons.get(id, 0))
+	if lv >= WEAPON_MAX_LEVEL:
+		return -1
+	var W = load("res://scripts/dialogue.gd").WEAPONS
+	var tier: int = W[id]["tier"] if W.has(id) else 1
+	return int(round([8, 18, 34][lv] * (1.0 + 0.25 * (tier - 1))))
+
+
+func upgrade_weapon(id: String) -> bool:
+	var cost := weapon_upgrade_cost(id)
+	if cost < 0 or crowns < cost:
+		return false
+	crowns -= cost
+	weapons[id] = int(weapons.get(id, 0)) + 1
+	if id == weapon:
+		weapon_tune = weapons[id]
+	print("[WEAPON] %s upgraded to %d" % [id, weapons[id]])
+	return true
+
+
+## Liore's aether tuning (Dread): the same upgrade, paid another way.
+func tune_weapon() -> bool:
+	if int(weapons.get(weapon, 0)) >= WEAPON_MAX_LEVEL:
+		return false
+	weapons[weapon] = int(weapons.get(weapon, 0)) + 1
+	weapon_tune = weapons[weapon]
+	return true
 
 
 func toggle_loadout(id: String) -> void:
@@ -1025,6 +1143,15 @@ func skill_title(id: String) -> String:
 ## Hands: how far the King has come back to himself (0 = corrupted, 1 = enlightened).
 func purity() -> float:
 	return clampf(memories.size() / 6.0, 0.0, 1.0)
+
+
+## Your blade in the arena is learned like a skill ("blade") but is not one of the spells.
+const BLADE_INFO := {"name": "Your Blade", "school": "WARLORD", "rarity": 0, "color": Color(1.0, 0.9, 0.7), "counter": "SLIP",
+	"desc": "The tyrant's own sword, summoned for one cut across the dais."}
+
+
+func skill_info(id: String) -> Dictionary:
+	return SKILLS.get(id, BLADE_INFO)
 
 
 func weapon_tier() -> int:

@@ -30,6 +30,7 @@ const Side := preload("res://scripts/sidestory.gd")
 const CompassScript := preload("res://scripts/ui/compass.gd")
 const MapScript := preload("res://scripts/ui/vael_map.gd")
 const Parchment := preload("res://scripts/ui/parchment.gd")
+const Vox := preload("res://scripts/vox.gd")
 const MAP_PX := 256        # the map of Vael is a 256-pixel parchment over the world square
 const MAP_WORLD := 100.0   # it covers -100..100 in x and z
 
@@ -79,6 +80,18 @@ var sun: DirectionalLight3D
 var active := false
 var day := 1
 var rects: Array[Rect2] = []
+var rect_tops := PackedFloat32Array()  # how tall each solid is: low ones you can step or climb onto
+var inventory
+var water_depth := {}        # Vector2i cell -> metres of water (shallows you can wade, deeps you cannot)
+var water_mat: ShaderMaterial
+var clouds: Array = []
+var story_marker: Node3D
+var story_label: Label3D
+var ping_t := 0.0
+var ping_node: Node3D
+var letterbox: Array = []
+var chat_asked := {}
+const CELL := 2.0
 var npcs := {}
 var townsfolk: Array = []
 var enemies: Array = []
@@ -156,6 +169,7 @@ var hotbar
 
 # Autoplay
 var bot_t := 0.0
+var bot_inventory_done := false
 var bot_last := Vector3.ZERO
 var bot_stuck_t := 0.0
 var bot_side := 0.0
@@ -184,21 +198,24 @@ func _ready() -> void:
 	_build_swords()
 	_build_secrets()
 	# Everything else that is a plain flat colour gets a pixel grain (people and foes are drawn their own way)
+	_build_horizon()
 	var skip: Array = npcs.values() + townsfolk + [crier]
 	PixTex.pixelize(self, skip, 1.0)
+	_build_clouds()
 	walker = BossScript.new()
 	walker.walker = true
 	walker.ow = self
 	walker.game = game
 	add_child(walker)
 	walker.cam.current = false
-	walker.cam.far = 140.0
+	walker.cam.far = 420.0  # far enough for the mountains on the horizon
 	walker.right_hand.scale = Vector3.ONE * 1.25  # smaller on foot than on the throne
 	walker.left_hand.scale = Vector3.ONE * 1.25
 	stranger = StrangerScript.new()
 	add_child(stranger)
 	stranger.visible = false
 	_build_hud()
+	_build_story_marker()
 	set_active(false)
 
 
@@ -218,6 +235,7 @@ func set_active(on: bool) -> void:
 ## Start a new day: wake somewhere in Vael, fresh foes outside the walls, today's boss in its lair.
 func begin_day() -> void:
 	day = GameState.level
+	bot_inventory_done = false
 	if day == 1:
 		opened.clear()
 	GameState.day_time = 0.0
@@ -306,6 +324,10 @@ func _process(delta: float) -> void:
 	t += delta
 	_update_hud()
 	_update_floaters(delta)
+	for c in clouds:
+		c.position.x += delta * 1.6
+		if c.position.x > 280.0:
+			c.position.x = -280.0
 	if busy():
 		walker.move_input = Vector2.ZERO
 		walker.sprint = false
@@ -319,24 +341,20 @@ func _process(delta: float) -> void:
 			_glimpse()
 	_update_sky()
 	_update_stranger(delta)
+	_update_story_marker(delta)
 	_update_quest()
 	_update_crier(delta)
 	_update_ambush()
 	# Input
 	if GameState.autoplay:
 		_autoplay(delta)
-	elif dusk_state != "met":
-		var mv := Vector2.ZERO
-		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
-			mv.y += 1.0
-		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
-			mv.y -= 1.0
-		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
-			mv.x -= 1.0
-		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
-			mv.x += 1.0
-		walker.move_input = mv
-		walker.sprint = Input.is_key_pressed(KEY_SHIFT)
+	elif dusk_state == "walking":
+		_cutscene_walk(delta)
+	elif dusk_state == "":
+		walker.move_input = Input.get_vector("move_left", "move_right", "move_back", "move_forward")
+		walker.sprint = Input.is_action_pressed("sprint")
+		walker.crouch = Input.is_action_pressed("crouch")
+		walker.jump_held = Input.is_action_pressed("jump")
 	else:
 		walker.move_input = Vector2.ZERO
 	# Ticks
@@ -352,44 +370,57 @@ func _process(delta: float) -> void:
 	if wm != will_max:
 		will += maxf(0.0, wm - will_max)
 		will_max = wm
+	_separate()
 	_find_interact()
-	hurt_overlay.color.a = move_toward(hurt_overlay.color.a, 0.0, delta * 1.5)
+	var floor_a := 0.0
+	if will_max > 0.0 and will / will_max < 0.3:
+		floor_a = 0.18 + 0.14 * maxf(0.0, sin(t * 8.0))
+	hurt_overlay.color.a = maxf(floor_a, move_toward(hurt_overlay.color.a, 0.0, delta * 1.2))
 
 
-func _input(event: InputEvent) -> void:
-	if active and map_open and event is InputEventKey and event.pressed and not event.echo and event.keycode in [KEY_M, KEY_ESCAPE, KEY_TAB]:
+## Vael lives inside the pixelating SubViewport, whose container ignores the mouse, so main.gd
+## forwards every input event here while the day is active (see main._input).
+func handle_input(event: InputEvent) -> void:
+	if active and map_open and event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.is_action_pressed("map")):
 		_toggle_map()
 		get_viewport().set_input_as_handled()
 		return
-	if busy() or dusk_state == "met":
+	if busy() or dusk_state != "":
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		walker.look(event.relative)
-	elif event is InputEventMouseButton and event.pressed:
-		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-			game._capture_mouse()
-			return
-		match event.button_index:
-			MOUSE_BUTTON_LEFT:
-				swing_queued = true
-			MOUSE_BUTTON_RIGHT:
-				walker.try_parry()
-			MOUSE_BUTTON_WHEEL_UP:
-				walker.cycle(-1)
-			MOUSE_BUTTON_WHEEL_DOWN:
-				walker.cycle(1)
-	elif event is InputEventKey and event.pressed and not event.echo:
-		match event.keycode:
-			KEY_E:
-				_interact()
-			KEY_M, KEY_TAB:
-				_toggle_map()
-			KEY_Q:
-				walker.try_cast(walker.selected_id())
-			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
-				walker.select(event.keycode - KEY_1)
-			KEY_ESCAPE:
-				game._pause()
+		walker.look(event.screen_relative)
+		return
+	if event is InputEventMouseButton and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		game._capture_mouse()
+		return
+	if event.is_action_pressed("day_swing"):
+		swing_queued = true
+	elif event.is_action_pressed("parry"):
+		walker.try_parry()
+	elif event.is_action_pressed("day_cast"):
+		walker.try_cast(walker.selected_id())
+	elif event.is_action_pressed("jump"):
+		walker.try_jump()
+	elif event.is_action_pressed("dodge"):
+		walker.try_dodge()
+	elif event.is_action_pressed("interact"):
+		_interact()
+	elif event.is_action_pressed("map"):
+		_toggle_map()
+	elif event.is_action_pressed("inventory"):
+		open_inventory()
+	elif event.is_action_pressed("throne"):
+		game.open_throne_from_day()
+	elif event.is_action_pressed("ping"):
+		ping_story()
+	elif event.is_action_pressed("skill_prev"):
+		walker.cycle(-1)
+	elif event.is_action_pressed("skill_next"):
+		walker.cycle(1)
+	else:
+		for k in 5:
+			if event.is_action_pressed("skill_%d" % (k + 1)):
+				walker.select(k)
 
 
 # =============================================================================
@@ -432,8 +463,8 @@ func weapon_damage() -> float:
 func _swing() -> void:
 	var W := _weapon()
 	swing_cd = int(W["ticks"])
-	walker.swing = 1.0
-	Sfx.play("dodge", -4.0, 0.6 + randf() * 0.2)
+	walker.start_swing(Swords.swing_style(GameState.weapon), clampf(int(W["ticks"]) * GameState.TICK * 0.9, 0.3, 1.0))
+	Sfx.play(Swords.swing_sound(GameState.weapon), -3.0, randf_range(0.9, 1.1))
 	var fwd := Vector3(-sin(walker.yaw), 0, -cos(walker.yaw))
 	var hit := false
 	for e in enemies:
@@ -458,7 +489,8 @@ func spawn_day_attack(id: String) -> bool:
 		return false
 	var dmg := GameState.damage_for(id) * 1.4
 	var col: Color = GameState.SKILLS[id]["color"]
-	Sfx.play("cast", -8.0, randf_range(0.8, 1.3))
+	Sfx.play("cast", -12.0, randf_range(0.8, 1.3))
+	Sfx.cast_school(GameState.SKILLS[id]["school"])
 	if id in DAY_NOVA:
 		var r := 5.0 if id in ["tide", "stomp", "sweep"] else 4.0
 		_strike_area(walker.position, id, dmg, r)
@@ -671,6 +703,10 @@ func _take_blow(dmg: float, from) -> void:
 	if dusk_state == "met":
 		return
 	regen_block = 6.0
+	if walker.is_dodging():
+		game.popup_text(walker.head.global_position + Vector3(0, 0.2, -1.2), "DODGED", Color(0.7, 0.95, 1.0), 1.0)
+		Sfx.play("dodge", -6.0)
+		return
 	if walker.is_parrying():
 		dmg *= GameState.parry_taken()
 		GameState.style["parries"] += 1
@@ -684,7 +720,7 @@ func _take_blow(dmg: float, from) -> void:
 	else:
 		walker.hurt()
 		Sfx.play("boss_hurt", -4.0)
-		hurt_overlay.color.a = 0.45
+		hurt_overlay.color.a = maxf(hurt_overlay.color.a, 0.45 + 0.5 * clampf(dmg / maxf(1.0, will_max) * 6.0, 0.0, 1.0))
 		game.tutorial("day_hurt", "The red number over a foe counts the ticks until its blow lands. RIGHT-CLICK on the last beat to parry, or step out of its reach.")
 	will -= dmg
 	if will <= 0.0:
@@ -799,21 +835,39 @@ func _begin_dusk() -> void:
 		if is_instance_valid(b["node"]):
 			b["node"].queue_free()
 	bolts.clear()
-	# He comes from somewhere with a clear line to you.
-	var a0 := randf() * TAU
-	var p: Vector3 = walker.position
-	for k in 12:
-		var a := a0 + TAU * k / 12.0
-		var cand: Vector3 = walker.position + Vector3(cos(a), 0, sin(a)) * 13.0
-		if _clear_line(cand, walker.position):
-			p = cand
+	# He steps into view AHEAD of you: somewhere in your vision cone with a clear line to you.
+	var fwd := Vector3(-sin(walker.yaw), 0, -cos(walker.yaw))
+	var p: Vector3 = walker.position + fwd * 10.0
+	var found := false
+	for dist in [11.0, 9.0, 13.0, 7.0]:
+		for off in [0.0, 0.25, -0.25, 0.5, -0.5]:
+			var cand: Vector3 = walker.position + fwd.rotated(Vector3.UP, off) * dist
+			if not blocked(cand) and water_depth_at(cand) <= 0.0 and _clear_line(cand, walker.position):
+				p = cand
+				found = true
+				break
+		if found:
 			break
+	if not found:
+		var a0 := randf() * TAU
+		for k in 12:
+			var a := a0 + TAU * k / 12.0
+			var cand2: Vector3 = walker.position + Vector3(cos(a), 0, sin(a)) * 9.0
+			if _clear_line(cand2, walker.position):
+				p = cand2
+				break
+	_letterbox(true)
+	chat_asked = {}
+	var ring := Fx.particles(Color(1.0, 0.95, 0.85), 30, 1.2, 1.2, 0.05, true)
+	add_child(ring)
+	ring.global_position = p + Vector3(0, 1.0, 0)
 	stranger.position = p
 	stranger_last = p
 	stranger_stuck_t = 0.0
 	stranger.refresh()
 	stranger.visible = true
-	stranger.walking = true
+	stranger.walking = false
+	stranger.rotation.y = atan2(walker.position.x - p.x, walker.position.z - p.z) + PI
 	glimpse_t = -1.0
 	var line := "A man in white walks toward you through the crowd. No one else seems to see him."
 	if GameState.revealed:
@@ -835,27 +889,197 @@ func _update_stranger(delta: float) -> void:
 		return
 	if dusk_state != "walking":
 		return
+	# He waits, watching you come (he takes a step or two himself near the end).
 	var to := Vector3(walker.position.x - stranger.position.x, 0, walker.position.z - stranger.position.z)
 	var d := to.length()
-	stranger.rotation.y = atan2(-to.x, -to.z)
-	if d > 2.2:
-		var step: Vector3 = stranger.position + to.normalized() * 2.4 * delta
-		# If something is in his way for too long, he simply is not stopped by it.
-		stranger.position = step if stranger_stuck_t > 1.0 else resolve(stranger.position, step, 0.4)
-		stranger_stuck_t += delta
-		if stranger.position.distance_to(stranger_last) > 0.8:
-			stranger_last = stranger.position
-			stranger_stuck_t = 0.0
+	stranger.rotation.y = lerp_angle(stranger.rotation.y, atan2(-to.x, -to.z), 1.0 - exp(-delta * 4.0))
+	stranger.walking = d > 2.6 and d < 5.0
+	if stranger.walking:
+		stranger.position = resolve(stranger.position, stranger.position + to.normalized() * 0.9 * delta, 0.4)
+	if d > 2.4:
 		return
 	stranger.walking = false
 	dusk_state = "met"
 	walker.move_input = Vector2.ZERO
-	# Face him.
-	var head_p: Vector3 = stranger.global_position + Vector3(0, 1.6, 0)
-	var dd: Vector3 = head_p - walker.head.global_position
-	walker.yaw = atan2(-dd.x, -dd.z)
-	walker.pitch = -0.05
-	get_tree().create_timer(0.6, false).timeout.connect(func(): dusk_met.emit())
+	get_tree().create_timer(0.4, false).timeout.connect(_stranger_chat)
+
+
+## The dusk cutscene: you walk slowly toward him, your eyes drawn to his face.
+func _cutscene_walk(delta: float) -> void:
+	var head_p: Vector3 = stranger.global_position + Vector3(0, 1.62, 0)
+	walker.look_toward(head_p, delta * 0.6)
+	var to := Vector3(stranger.position.x - walker.position.x, 0, stranger.position.z - walker.position.z)
+	var ang := absf(wrapf(atan2(-to.x, -to.z) - walker.yaw, -PI, PI))
+	walker.sprint = false
+	walker.crouch = false
+	walker.move_input = Vector2(0, 0.42 if ang < 0.5 else 0.0)
+
+
+## He talks to you: tonight's line, two questions you can ask him, then the game.
+func _stranger_chat() -> void:
+	if dusk_state != "met":
+		return
+	game.dialogue_speaker = stranger
+	game._release_mouse()
+	var n := clampi(GameState.level - 1, 0, Dialogue.STRANGER_NIGHT.size() - 1)
+	var line: Array = Dialogue.STRANGER_NIGHT[n]
+	var chat: Array = Dialogue.STRANGER_CHAT[n]
+	var name := "YOURSELF" if GameState.revealed else "THE STRANGER"
+	var body: String = str(line[1]) if chat_asked.is_empty() else "\"Anything else?\""
+	var opts: Array = []
+	for k in chat.size() - 1:
+		if not chat_asked.has(k):
+			opts.append([chat[k][0], _stranger_answer.bind(k)])
+	opts.append([chat[chat.size() - 1], _stranger_done])
+	game._show_choice(name, body, "", opts)
+
+
+func _stranger_answer(k: int) -> void:
+	chat_asked[k] = true
+	var n := clampi(GameState.level - 1, 0, Dialogue.STRANGER_CHAT.size() - 1)
+	var chat: Array = Dialogue.STRANGER_CHAT[n]
+	game._show_choice("YOURSELF" if GameState.revealed else "THE STRANGER", str(chat[k][1]), "", [["...", _stranger_chat]])
+
+
+func _stranger_done() -> void:
+	game.dialogue_speaker = null
+	game._clear_overlay()
+	_letterbox(false)
+	dusk_met.emit()
+
+
+## Cinema bars for the dusk walk.
+func _letterbox(on: bool) -> void:
+	for b in letterbox:
+		var tw: Tween = (b as Control).create_tween()
+		if b.get_meta("top"):
+			tw.tween_property(b, "offset_bottom", 74.0 if on else 0.0, 0.8)
+		else:
+			tw.tween_property(b, "offset_top", -74.0 if on else 0.0, 0.8)
+
+
+# =============================================================================
+# The story marker: a gold diamond over the next step of the story; G pings it.
+# =============================================================================
+
+func story_target() -> Dictionary:
+	if dusk_state != "":
+		return {}
+	if is_instance_valid(day_boss) and not day_boss.dead:
+		return {"pos": day_boss.position, "label": str(_boss_data().get("name", "TODAY'S FOE"))}
+	var q := _quest()
+	if not q.is_empty() and GameState.quest_state == "active":
+		return {"pos": q["where"], "label": "THE LAMPLIGHTER'S ERRAND"}
+	if not q.is_empty() and GameState.quest_state == "" and npcs.has("edda"):
+		return {"pos": npcs["edda"].position, "label": "EDDA THE LAMPLIGHTER"}
+	return {"pos": SPOTS["flagon"], "label": "THE HOLLOW FLAGON · WAIT FOR DUSK"}
+
+
+func _build_story_marker() -> void:
+	story_marker = Node3D.new()
+	add_child(story_marker)
+	story_label = Label3D.new()
+	story_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	story_label.no_depth_test = true
+	story_label.fixed_size = true
+	story_label.pixel_size = 0.0018
+	story_label.font = UiArt.pixel_font()
+	story_label.font_size = 32
+	story_label.outline_size = 8
+	story_label.modulate = Color(1.0, 0.82, 0.35)
+	story_label.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	story_marker.add_child(story_label)
+
+
+func _update_story_marker(delta: float) -> void:
+	if story_marker == null:
+		return
+	var tg := story_target()
+	ping_t = maxf(0.0, ping_t - delta)
+	if tg.is_empty():
+		story_marker.visible = false
+		return
+	var pos: Vector3 = tg["pos"]
+	var d := Vector2(pos.x - walker.position.x, pos.z - walker.position.z).length()
+	story_marker.visible = d > 6.0
+	story_marker.position = pos + Vector3(0, 3.4 + sin(t * 2.5) * 0.15, 0)
+	story_label.text = "◆\n%s · %dM" % [str(tg["label"]), int(d)] if ping_t > 0.0 else "◆ %dM" % int(d)
+	story_label.pixel_size = 0.0024 if ping_t > 0.0 else 0.0016
+	if is_instance_valid(ping_node):
+		ping_node.position = Vector3(pos.x, 0, pos.z)
+
+
+## G: a beam of light and a ring race out from the next story step, seen through walls.
+func ping_story() -> void:
+	var tg := story_target()
+	if tg.is_empty():
+		return
+	ping_t = 6.0
+	Sfx.play("reveal", -8.0, 1.6)
+	if is_instance_valid(ping_node):
+		ping_node.queue_free()
+	ping_node = Node3D.new()
+	add_child(ping_node)
+	var pos: Vector3 = tg["pos"]
+	ping_node.position = Vector3(pos.x, 0, pos.z)
+	var bm := StandardMaterial3D.new()
+	bm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	bm.albedo_color = Color(1.0, 0.82, 0.35, 0.45)
+	bm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	bm.no_depth_test = true
+	var beam := Fx.cylinder(0.35, 0.35, 70.0, bm, Vector3(0, 35.0, 0))
+	beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	ping_node.add_child(beam)
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.9
+	tm.outer_radius = 1.0
+	tm.rings = 32
+	tm.ring_segments = 4
+	var ring := MeshInstance3D.new()
+	ring.mesh = tm
+	ring.material_override = bm
+	ring.position.y = 0.2
+	ping_node.add_child(ring)
+	var tw := ping_node.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(ring, "scale", Vector3(14, 1, 14), 1.6).set_ease(Tween.EASE_OUT)
+	tw.tween_property(bm, "albedo_color:a", 0.0, 6.0).set_delay(1.0)
+	tw.chain().tween_callback(ping_node.queue_free)
+	show_toast("THE STORY", "%s · %dM %s" % [str(tg["label"]), int(Vector2(pos.x - walker.position.x, pos.z - walker.position.z).length()), _compass(pos - walker.position)], 3.0)
+
+
+## Points of interest for the map: what is what, and where.
+func map_pois() -> Array:
+	var out: Array = []
+	for ml in map_labels:
+		var lbl := str(ml[1])
+		var kind := ""
+		if "FLAGON" in lbl or "COG" in lbl or "LENS" in lbl or "TAVERN" in lbl:
+			kind = "tavern"
+		elif "FORGE" in lbl:
+			kind = "forge"
+		elif "CATHEDRAL" in lbl:
+			kind = "church"
+		elif "CLOCK" in lbl:
+			kind = "clock"
+		elif "STABLE" in lbl:
+			kind = "stable"
+		elif "FOUNTAIN" in lbl:
+			kind = "fountain"
+		elif "BRIDGE" in lbl:
+			kind = "bridge"
+		if kind != "":
+			out.append({"pos": ml[0], "kind": kind, "label": lbl})
+	for g in GATES:
+		var gp: Vector3 = (GATES[g][0] + GATES[g][1]) * 0.5
+		out.append({"pos": gp, "kind": "gate", "label": "%s GATE" % str(g).to_upper()})
+	for id in npcs:
+		if is_instance_valid(npcs[id]):
+			out.append({"pos": npcs[id].position, "kind": "npc", "label": _npc_name(id).get_slice(",", 0)})
+	for c in chests:
+		if not opened.has(c["id"]):
+			out.append({"pos": c["pos"], "kind": "chest", "label": "CHEST"})
+	return out
 
 
 # =============================================================================
@@ -931,6 +1155,7 @@ func _interact() -> void:
 
 
 func _close_dialogue() -> void:
+	game.dialogue_speaker = null
 	game._clear_overlay()
 	if active:
 		game._capture_mouse()
@@ -959,6 +1184,7 @@ func _talk(id: String) -> void:
 	var tone := Dialogue.tone()
 	if npcs.has(id):
 		npcs[id].talk()
+		game.dialogue_speaker = npcs[id]
 	GameState.npc_met[id] = true
 	Sfx.play("click", -4.0, 0.8)
 	var opts: Array = []
@@ -985,6 +1211,9 @@ func _talk(id: String) -> void:
 
 
 func _reply(id: String, text: String) -> void:
+	if npcs.has(id):
+		game.dialogue_speaker = npcs[id]
+		npcs[id].talk()
 	game._show_choice(_npc_name(id), text, "", [["Thank them", _close_dialogue], ["Talk more", _talk.bind(id)]])
 
 
@@ -1033,12 +1262,11 @@ func _do_service(id: String, cost: int, kind: bool) -> void:
 			GameState.tonight_will += 25.0
 			_reply(id, ["She pours with both hands shaking. (+25 Will tonight)", "Hot ale, a seat by the cog-fire. (+25 Will tonight)", "The whole bar raises a glass to you. (+25 Will tonight)"][tone])
 		"tune":
-			if GameState.weapon_tune >= 3:
+			if not GameState.tune_weapon():
 				GameState.dread += cost
 				_reply(id, "\"Any more aether in that blade and it'll start thinking for itself.\" (Fully tuned)")
 				return
 			served[service] = true
-			GameState.weapon_tune += 1
 			_build_weapon()
 			_reply(id, "The blade drinks the light from the conduits. It hums. (Weapon damage +20%%, tuned %d / 3)" % GameState.weapon_tune)
 		"song":
@@ -1082,10 +1310,12 @@ func _intimidate(id: String) -> void:
 
 
 func _forge() -> void:
+	if npcs.has("hennik"):
+		game.dialogue_speaker = npcs["hennik"]
 	var opts: Array = []
 	for wid in Dialogue.WEAPONS:
 		var W: Dictionary = Dialogue.WEAPONS[wid]
-		if int(W["tier"]) > day or wid == GameState.weapon or int(W["cost"]) < 0:
+		if int(W["tier"]) > day or GameState.weapons.has(wid) or int(W["cost"]) < 0:
 			continue
 		var cost := _price(int(W["cost"]))
 		opts.append(["%s · %d DMG / %d TICKS · %s" % [str(W["name"]).to_upper(), int(W["dmg"]), int(W["ticks"]), ("%d DREAD" % cost) if cost > 0 else "FREE"],
@@ -1104,8 +1334,8 @@ func _buy_weapon(wid: String, cost: int) -> void:
 		_reply("hennik", "You do not have %d Dread." % cost)
 		return
 	GameState.dread -= cost
-	GameState.weapon = wid
-	GameState.weapon_tune = 0
+	GameState.give_weapon(wid)
+	GameState.equip_weapon(wid)
 	_build_weapon()
 	Sfx.play("crown", -4.0)
 	var W: Dictionary = Dialogue.WEAPONS[wid]
@@ -1143,12 +1373,12 @@ func _loot(c: Dictionary) -> void:
 		var tr := int(Dialogue.WEAPONS[wid]["tier"])
 		if int(Dialogue.WEAPONS[wid]["cost"]) < 0:
 			continue
-		if tr > cur_tier and tr <= day + (1 if sealed else 0) and (better == "" or tr > int(Dialogue.WEAPONS[better]["tier"])):
+		if not GameState.weapons.has(wid) and tr > cur_tier and tr <= day + (1 if sealed else 0) and (better == "" or tr > int(Dialogue.WEAPONS[better]["tier"])):
 			better = wid
 	var r := randf()
 	if better != "" and r < (0.5 if sealed else 0.3):
-		GameState.weapon = better
-		GameState.weapon_tune = 0
+		GameState.give_weapon(better)
+		GameState.equip_weapon(better)
 		_build_weapon()
 		line = "Wrapped in oilcloth: the %s.\n%s" % [str(Dialogue.WEAPONS[better]["name"]).to_upper(), Dialogue.WEAPONS[better]["desc"]]
 	elif r < 0.65:
@@ -1185,26 +1415,60 @@ func _mirror() -> void:
 # Collision: everything solid is a rectangle on the ground (x, z).
 # =============================================================================
 
-func _solid(c: Vector2, size: Vector2) -> void:
+## A solid footprint. h = how tall it is: anything under 0.45 you step over, anything up to about
+## 2.3 you can jump and climb onto (crates, stalls, the fountain rim, low walls), taller blocks you.
+func _solid(c: Vector2, size: Vector2, h: float = 99.0) -> void:
 	rects.append(Rect2(c - size * 0.5, size))
+	rect_tops.append(h)
 
 
 func blocked(lp: Vector3) -> bool:
 	if absf(lp.x) > BOUND or absf(lp.z) > BOUND:
 		return true
-	for r in rects:
-		if r.has_point(Vector2(lp.x, lp.z)):
+	for i in rects.size():
+		if rect_tops[i] > lp.y + 0.45 and rects[i].has_point(Vector2(lp.x, lp.z)):
 			return true
 	return false
 
 
-## Slide a body of radius r from `from` toward `to`, pushed out of every solid rectangle.
-func resolve(from: Vector3, to: Vector3, r: float) -> Vector3:
+## The height you stand at here: the top of a low solid under you, else the ground.
+func ground_at(p: Vector3, r: float) -> float:
+	var g := 0.0
+	for i in rects.size():
+		var top := rect_tops[i]
+		if top <= p.y + 0.45 and top > g and rects[i].grow(r * 0.5).has_point(Vector2(p.x, p.z)):
+			g = top
+	return g
+
+
+## A ledge just in front of you that you could climb: its top, or -1.
+func ledge_top(p: Vector3, fwd: Vector3) -> float:
+	var q := Vector2(p.x + fwd.x * 0.7, p.z + fwd.z * 0.7)
+	var best := -1.0
+	for i in rects.size():
+		var top := rect_tops[i]
+		if top > p.y + 0.3 and top <= p.y + 2.35 and rects[i].has_point(q):
+			best = maxf(best, top)
+	if best < 0.0:
+		return -1.0
+	# Nothing taller standing right where you would land
+	for i in rects.size():
+		if rect_tops[i] > best + 0.45 and rects[i].has_point(q):
+			return -1.0
+	return best
+
+
+## Slide a body of radius r from `from` toward `to`, pushed out of every solid rectangle taller
+## than it can step (y = the body's feet; people and foes walk at 0, you can stand on things).
+func resolve(from: Vector3, to: Vector3, r: float, y: float = 0.0) -> Vector3:
 	var p := to
 	p.x = clampf(p.x, -BOUND, BOUND)
 	p.z = clampf(p.z, -BOUND, BOUND)
 	for pass_i in 2:
-		for rc in rects:
+		for i in rects.size():
+			if rect_tops[i] <= y + 0.45:
+				continue
+			var rc := rects[i]
 			var e := rc.grow(r)
 			if not e.has_point(Vector2(p.x, p.z)):
 				continue
@@ -1223,6 +1487,68 @@ func resolve(from: Vector3, to: Vector3, r: float) -> Vector3:
 				p.z = e.end.y + 0.001
 	p.y = from.y
 	return p
+
+
+## Bodies never stand inside each other: people, foes, the Stranger and you push apart, then
+## anyone pushed is slid back out of buildings and props.
+func _separate() -> void:
+	var bodies: Array = []
+	for n in npcs.values():
+		if is_instance_valid(n):
+			bodies.append([n, 0.38, 1.0])
+	for n in townsfolk:
+		if is_instance_valid(n):
+			bodies.append([n, 0.36, 1.0])
+	for e in enemies:
+		if is_instance_valid(e) and not e.dead:
+			bodies.append([e, 0.45 * e.scale.x, 0.6 if e.is_boss else 1.0])
+	if is_instance_valid(stranger) and stranger.visible:
+		bodies.append([stranger, 0.4, 0.3])
+	bodies.append([walker, 0.42, 0.0])
+	var moved := {}
+	for i in bodies.size():
+		var a: Array = bodies[i]
+		var na: Node3D = a[0]
+		for j in range(i + 1, bodies.size()):
+			var b: Array = bodies[j]
+			var nb: Node3D = b[0]
+			var d := Vector2(nb.position.x - na.position.x, nb.position.z - na.position.z)
+			var min_d: float = a[1] + b[1]
+			var dl := d.length()
+			if dl >= min_d:
+				continue
+			if dl < 0.001:
+				d = Vector2(randf_range(-1, 1), randf_range(-1, 1))
+				dl = d.length()
+			var push := d / dl * (min_d - dl)
+			var wa: float = a[2]
+			var wb: float = b[2]
+			var tot := maxf(0.001, wa + wb)
+			if wa > 0.0:
+				na.position -= Vector3(push.x, 0, push.y) * (wa / tot)
+				moved[na] = a[1]
+			if wb > 0.0:
+				nb.position += Vector3(push.x, 0, push.y) * (wb / tot)
+				moved[nb] = b[1]
+	for n in moved:
+		if n != walker:
+			n.position = resolve(n.position, n.position, moved[n])
+
+
+## The inventory of blades (I): equip one, or upgrade it with Crowns.
+func open_inventory() -> void:
+	if busy() or dusk_state != "":
+		return
+	var inv = load("res://scripts/ui/inventory.gd").new()
+	inv.ow = self
+	inv.theme = game.theme_res
+	game.overlay_layer.add_child(inv)
+	game.overlay = inv
+	game._release_mouse()
+	inv.closed.connect(func():
+		game.overlay = null
+		_build_weapon()
+		game._capture_mouse())
 
 
 func _clear_line(a: Vector3, b: Vector3) -> bool:
@@ -1250,8 +1576,16 @@ func _make_env() -> Environment:
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	e.ambient_light_energy = 0.6
 	e.fog_enabled = true
-	e.fog_density = 0.0025
-	e.fog_sky_affect = 0.3
+	e.fog_density = 0.0032
+	e.fog_sky_affect = 0.25
+	e.fog_aerial_perspective = 0.55     # far things take the sky's colour: depth
+	e.fog_height = 1.2                  # a low mist that pools in the hollows and over water
+	e.fog_height_density = 0.05
+	e.ssao_enabled = true               # contact shadows in every corner and under every voxel
+	e.ssao_radius = 1.4
+	e.ssao_intensity = 2.4
+	e.ssao_detail = 0.6
+	e.ssil_enabled = false
 	e.glow_enabled = true
 	e.glow_intensity = 0.35
 	e.glow_bloom = 0.03
@@ -1275,6 +1609,9 @@ func _update_sky() -> void:
 	sm.ground_horizon_color = horizon.darkened(0.3)
 	sm.ground_bottom_color = Color(0.12, 0.1, 0.1)
 	env.fog_light_color = horizon
+	if water_mat:
+		water_mat.set_shader_parameter("tint", 0.45 + 0.55 * sin(dt * PI) if dusk_state == "" else 0.4)
+	env.fog_height_density = 0.06 * (1.0 - sin(dt * PI)) + 0.015  # morning and evening mist
 	sun.rotation_degrees = Vector3(-lerpf(12.0, 168.0, dt), 35.0, 0.0)
 	var warm := Color(1.0, 0.72, 0.5)
 	sun.light_color = warm.lerp(Color(1.0, 0.96, 0.9), sin(dt * PI))
@@ -1361,63 +1698,149 @@ func wet_at(p: Vector3) -> float:
 	return Parchment.wetness(px.x, px.y, MAP_PX, map_seed, true, Parchment.clear_field(MAP_PX, island_clears()))
 
 
+## The island, built from 2 m voxel columns: grass and sand land at the surface, and wherever the
+## map is wet the seabed steps down with depth (shallows near the shore, deeps further out).
+## One water surface lies just under the land; the water shader colours it by real depth.
+## Shallows (under 0.9 m) can be waded; deeper water is a wall.
 func _build_island() -> void:
-	var cell := 2.0
-	var water := PixTex.mat(PixTex.water(Color(0.16, 0.34, 0.52), 14), 3.0)
-	water.emission_enabled = true
-	water.emission = Color(0.03, 0.08, 0.14)
+	var cell := CELL
 	var sand := PixTex.mat(PixTex.ground(Color(0.8, 0.7, 0.48), "sand", 15), 2.0)
-	var wet_cells: Array[Vector3] = []
-	var shore_cells: Array[Vector3] = []
+	var grass := PixTex.mat(PixTex.ground(Color(0.3, 0.48, 0.2), "grass"), 2.0)
+	var silt := PixTex.mat(PixTex.ground(Color(0.42, 0.4, 0.3), "dirt", 16), 2.0)
+	var rockbed := PixTex.mat(PixTex.cobbles(Color(0.3, 0.32, 0.34), 17), 2.0)
+	var dirt := PixTex.mat(PixTex.ground(Color(0.5, 0.38, 0.24), "dirt"), 2.0)
+	var lists := {"grass": [], "sand": [], "dirt": [], "shallow": [], "silt": [], "rock": []}
+	var roads := _roads()
 	var n := int(2.0 * MAP_WORLD / cell)
+	var deep_cells := 0
 	for iz in n:
 		var run_start := -1
 		for ix in n + 1:
-			var is_wet := false
+			var deep := false
 			if ix < n:
 				var p := Vector3(-MAP_WORLD + (ix + 0.5) * cell, 0, -MAP_WORLD + (iz + 0.5) * cell)
 				var w := wet_at(p)
-				is_wet = w > Parchment.WET
-				if is_wet:
-					wet_cells.append(p)
-				elif w > Parchment.SHORE:
-					shore_cells.append(p)
-			# Merge runs of water along the row into one solid rectangle
-			if is_wet and run_start < 0:
+				var river := absf(p.z - 72.0) < 4.0
+				if w > Parchment.WET or river:
+					var d := 1.6 if river else 0.35 + clampf((w - Parchment.WET) / 0.22, 0.0, 1.0) * 2.8
+					d = snappedf(d, 0.25)
+					water_depth[Vector2i(ix, iz)] = d
+					var kind := "shallow" if d < 1.0 else ("silt" if d < 2.2 else "rock")
+					lists[kind].append(p - Vector3(0, d, 0))
+					deep = true  # nobody wades in Vael: every water cell is a wall
+					if deep:
+						deep_cells += 1
+				else:
+					var on_road := false
+					for seg in roads:
+						if _seg_dist(p, seg[0], seg[1]) < 1.8:
+							on_road = true
+							break
+					if on_road:
+						lists["dirt"].append(p)
+					elif w > Parchment.SHORE:
+						lists["sand"].append(p)
+					else:
+						lists["grass"].append(p)
+			# Merge runs of deep water along the row into one solid rectangle (the river has its own)
+			if deep and run_start < 0:
 				run_start = ix
-			elif not is_wet and run_start >= 0:
+			elif not deep and run_start >= 0:
 				var x0 := -MAP_WORLD + run_start * cell
 				var rect := Rect2(Vector2(x0 + 0.3, -MAP_WORLD + iz * cell), Vector2((ix - run_start) * cell - 0.6, cell))
-				rects.append(rect)
-				sea_rects[rect] = true
+				if absf(rect.get_center().y - 72.0) > 4.5:
+					rects.append(rect)
+					rect_tops.append(99.0)
+					sea_rects[rect] = true
 				run_start = -1
-	for pair in [[wet_cells, water, 0.035], [shore_cells, sand, 0.02]]:
-		var cells: Array = pair[0]
+	var mats := {"grass": grass, "sand": sand, "dirt": dirt, "shallow": sand, "silt": silt, "rock": rockbed}
+	for kind in lists:
+		var cells: Array = lists[kind]
 		if cells.is_empty():
 			continue
-		var pm := PlaneMesh.new()
-		pm.size = Vector2(cell, cell)
+		# Each column is a 2 m box whose top is the surface: the sides fill the step down to the bed.
+		var bm := BoxMesh.new()
+		bm.size = Vector3(cell, 3.0, cell)
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = pm
+		mm.mesh = bm
 		mm.instance_count = cells.size()
 		for i in cells.size():
-			mm.set_instance_transform(i, Transform3D(Basis(), cells[i] + Vector3(0, pair[2], 0)))
+			mm.set_instance_transform(i, Transform3D(Basis(), cells[i] + Vector3(0, -1.5, 0)))
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
-		mmi.material_override = pair[1]
+		mmi.material_override = mats[kind]
 		add_child(mmi)
-	print("[ISLAND] %d water cells, %d shore cells" % [wet_cells.size(), shore_cells.size()])
+	# The water surface: the whole map and out to the horizon, just below the land
+	water_mat = ShaderMaterial.new()
+	water_mat.shader = load("res://scripts/water.gdshader")
+	var wp := PlaneMesh.new()
+	wp.size = Vector2(900, 900)
+	wp.subdivide_width = 0
+	var wmi := MeshInstance3D.new()
+	wmi.mesh = wp
+	wmi.material_override = water_mat
+	wmi.position = Vector3(0, -0.14, 0)
+	wmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(wmi)
+	# Beyond the island the seabed falls away into the open sea
+	var deep_floor := Fx.box(Vector3(900, 1.0, 900), Fx.mat(Color(0.08, 0.12, 0.16)), Vector3(0, -6.0, 0))
+	add_child(deep_floor)
+	print("[ISLAND] %d water cells (%d deep), %d shore cells" % [water_depth.size(), deep_cells, (lists["sand"] as Array).size()])
+
+
+## Metres of water here (0 on land).
+func water_depth_at(p: Vector3) -> float:
+	var ix := int(floor((p.x + MAP_WORLD) / CELL))
+	var iz := int(floor((p.z + MAP_WORLD) / CELL))
+	return water_depth.get(Vector2i(ix, iz), 0.0)
+
+
+## Mountains ringing the island, stepped like everything else, fading blue into the distance.
+func _build_horizon() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 404
+	var rock := PixTex.mat(PixTex.cobbles(Color(0.42, 0.44, 0.5), 31), 6.0)
+	var dark_rock := PixTex.mat(PixTex.cobbles(Color(0.3, 0.32, 0.38), 32), 6.0)
+	var snow := PixTex.mat(PixTex.plaster(Color(0.92, 0.94, 0.98), 33), 6.0)
+	for k in 30:
+		var a := TAU * k / 30.0 + rng.randf_range(-0.08, 0.08)
+		var dist := rng.randf_range(170.0, 240.0)
+		var base := Vector3(cos(a) * dist, -2.0, sin(a) * dist)
+		var h := rng.randf_range(35.0, 80.0)
+		var w := rng.randf_range(40.0, 70.0)
+		var tiers := 5
+		for t2 in tiers:
+			var f := 1.0 - float(t2) / tiers
+			var th := h / tiers
+			var m: Material = snow if t2 >= tiers - 1 and h > 50.0 else (rock if t2 % 2 == 0 else dark_rock)
+			var b := Fx.box(Vector3(w * f, th, w * f * rng.randf_range(0.7, 1.0)), m, base + Vector3(rng.randf_range(-3, 3), th * (t2 + 0.5), rng.randf_range(-3, 3)))
+			b.rotation.y = rng.randf() * PI
+			b.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(b)
+
+
+## Slow pixel clouds high over Vael.
+func _build_clouds() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 505
+	var cm := StandardMaterial3D.new()
+	cm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	cm.albedo_color = Color(1, 1, 1, 0.75)
+	cm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	for k in 16:
+		var c := Node3D.new()
+		c.position = Vector3(rng.randf_range(-260, 260), rng.randf_range(55, 85), rng.randf_range(-260, 260))
+		for j in 4:
+			var b := Fx.box(Vector3(rng.randf_range(14, 30), rng.randf_range(3, 6), rng.randf_range(10, 22)), cm,
+				Vector3(rng.randf_range(-12, 12), rng.randf_range(-1, 2), rng.randf_range(-8, 8)))
+			b.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			c.add_child(b)
+		add_child(c)
+		clouds.append(c)
 
 
 func _build_ground() -> void:
-	var grass := PixTex.mat(PixTex.ground(Color(0.3, 0.48, 0.2), "grass"), 2.0)
-	var pm := PlaneMesh.new()
-	pm.size = Vector2(BOUND * 2.0 + 10.0, BOUND * 2.0 + 10.0)
-	var g := MeshInstance3D.new()
-	g.mesh = pm
-	g.material_override = grass
-	add_child(g)
 	var cobble := PixTex.mat(PixTex.cobbles(Color(0.5, 0.47, 0.43)), 2.4)
 	var cm := PlaneMesh.new()
 	cm.size = Vector2(WALL * 2.0, WALL * 2.0)
@@ -1427,26 +1850,60 @@ func _build_ground() -> void:
 	c.position.y = 0.01
 	add_child(c)
 	# Dirt roads to every lair (and around the walls to the Dawnspire)
-	var dirt := PixTex.mat(PixTex.ground(Color(0.5, 0.38, 0.24), "dirt"), 2.0)
-	for seg in _roads():
-		var a: Vector3 = seg[0]
-		var b: Vector3 = seg[1]
-		var road := Fx.box(Vector3(3.2, 0.02, a.distance_to(b) + 3.0), dirt, (a + b) * 0.5 + Vector3(0, 0.012, 0))
-		road.rotation.y = atan2(b.x - a.x, b.z - a.z)
-		add_child(road)
+	# (Dirt roads are painted onto the 2 m grid in _build_island, so they line up with the land.)
 	# The river and its bridge
-	var water := PixTex.mat(PixTex.water(Color(0.2, 0.42, 0.62)), 3.0)
-	water.emission_enabled = true
-	water.emission = Color(0.05, 0.12, 0.2)
-	add_child(Fx.box(Vector3(BOUND * 2.0 + 10.0, 0.05, 8.0), water, Vector3(0, 0.02, 72)))
 	_solid(Vector2(-49.5, 72), Vector2(93, 8))
 	_solid(Vector2(49.5, 72), Vector2(93, 8))
+	_build_old_bridge()
+
+
+## THE OLD BRIDGE, where Ser Corvin was ordered to hold to the last man and led his company
+## home instead. The far span fell the next spring and was never rebuilt: the near span ends in a
+## broken edge over the river, rubble in the water below, a stub on the far bank. A plaque at the
+## bridgehead tells the story. You can walk out to the broken edge; you cannot cross.
+func _build_old_bridge() -> void:
 	var stone := PixTex.mat(PixTex.bricks(Color(0.52, 0.5, 0.47), 21), 2.0)
-	add_child(Fx.box(Vector3(6, 0.4, 12), stone, Vector3(0, 0.2, 72)))
+	var mossy := PixTex.mat(PixTex.bricks(Color(0.42, 0.46, 0.38), 22), 2.0)
+	# The near span: z 66 -> 73, on the grid
+	add_child(Fx.box(Vector3(6, 0.4, 7), stone, Vector3(0, 0.2, 69.5)))
+	add_child(Fx.box(Vector3(6.4, 0.9, 1.2), stone, Vector3(0, -0.25, 67.0)))   # the pier on the near bank
 	for s in [-1.0, 1.0]:
-		add_child(Fx.box(Vector3(0.4, 1.0, 12), stone, Vector3(s * 3.0, 0.7, 72)))
-	_solid(Vector2(-3.1, 72), Vector2(0.4, 12))
-	_solid(Vector2(3.1, 72), Vector2(0.4, 12))
+		add_child(Fx.box(Vector3(0.4, 1.0, 7), stone, Vector3(s * 3.0, 0.7, 69.5)))
+		_solid(Vector2(s * 3.1, 69.5), Vector2(0.4, 7), 1.2)
+		# Lamp posts at the bridgehead
+		add_child(Fx.box(Vector3(0.25, 2.6, 0.25), Fx.mat(Color(0.2, 0.19, 0.2)), Vector3(s * 3.0, 1.5, 66.4)))
+		add_child(Fx.box(Vector3(0.4, 0.4, 0.4), Fx.mat(Color(0.5, 0.85, 1.0), 4.0), Vector3(s * 3.0, 2.9, 66.4)))
+	_solid(Vector2(0, 69.5), Vector2(5.6, 7.0), 0.42)   # the deck: you walk on it
+	# The broken edge: jagged stones, a rail snapped off, rubble half-sunk in the river
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 72
+	for k in 6:
+		var w := rng.randf_range(0.6, 1.3)
+		add_child(Fx.box(Vector3(w, rng.randf_range(0.3, 0.6), 0.5), stone, Vector3(-2.5 + k * 1.0, 0.15, 73.0 + rng.randf_range(-0.1, 0.25))))
+	for k in 7:
+		var b := Fx.box(Vector3.ONE * rng.randf_range(0.6, 1.2), mossy, Vector3(rng.randf_range(-3, 3), -0.35, rng.randf_range(73.8, 76.0)))
+		b.rotation = Vector3(rng.randf() * 0.6, rng.randf() * PI, rng.randf() * 0.6)
+		add_child(b)
+	_solid(Vector2(0, 74.7), Vector2(6.4, 3.4))   # no stepping off into the river
+	# The stub of the far span on the south bank
+	add_child(Fx.box(Vector3(6, 0.4, 2), mossy, Vector3(0, 0.2, 77.0)))
+	add_child(Fx.box(Vector3(0.4, 1.0, 1.4), mossy, Vector3(-3.0, 0.7, 77.3)))
+	# The plaque
+	add_child(Fx.box(Vector3(0.18, 1.1, 0.18), Fx.mat(Color(0.3, 0.2, 0.12)), Vector3(4.2, 0.55, 64.6)))
+	add_child(Fx.box(Vector3(0.9, 0.6, 0.08), PixTex.mat(PixTex.planks(Color(0.55, 0.4, 0.22)), 1.0), Vector3(4.2, 1.25, 64.55)))
+	_solid(Vector2(4.2, 64.6), Vector2(0.3, 0.3))
+	var lbl := Label3D.new()
+	lbl.text = "THE OLD BRIDGE"
+	lbl.font = UiArt.pixel_font()
+	lbl.font_size = 32
+	lbl.pixel_size = 0.006
+	lbl.modulate = Color(0.15, 0.1, 0.06)
+	lbl.position = Vector3(4.2, 1.3, 64.5)
+	lbl.rotation.y = PI
+	add_child(lbl)
+	readables.append({"pos": Vector3(4.2, 0, 64.0), "title": "THE OLD BRIDGE",
+		"text": "\"Hold the bridge to the last man,\" the king said.\n\nSer Corvin looked at his men, soaked and seventeen and terrified, and led them home instead. They lived. He was branded a traitor and stripped of his name.\n\nThe far span fell into the river the next spring. Nobody rebuilt it. Nobody wanted to cross to where the war was.\n\n(Someone has scratched underneath: HE WAS RIGHT.)"})
+	map_labels.append([Vector3(0, 0, 69), "THE OLD BRIDGE"])
 
 
 func _roads() -> Array:
@@ -1576,7 +2033,7 @@ func _build_city() -> void:
 	spray.gravity = Vector3(0, -6.0, 0)
 	spray.position = Vector3(0, 2.6, 0)
 	add_child(spray)
-	_solid(Vector2.ZERO, Vector2(4.2, 4.2))
+	_solid(Vector2.ZERO, Vector2(4.2, 4.2), 0.9)
 	var plaza := Fx.cylinder(10.0, 10.0, 0.02, Fx.mat(Color(0.55, 0.5, 0.45)), Vector3(0, 0.02, 0))
 	add_child(plaza)
 
@@ -1649,7 +2106,7 @@ func _build_city() -> void:
 	forge.add_child(heat)
 	_solid(Vector2(-24, -14.8), Vector2(8, 0.6))
 	_solid(Vector2(-26, -13.8), Vector2(2.4, 1.6))
-	_solid(Vector2(-23, -11.8), Vector2(1.0, 0.6))
+	_solid(Vector2(-23, -11.8), Vector2(1.0, 0.6), 0.9)
 	# Bakery stall
 	var stall := Node3D.new()
 	stall.position = Vector3(-9, 0, -8)
@@ -1660,7 +2117,7 @@ func _build_city() -> void:
 	stall.add_child(awning)
 	for k in 5:
 		stall.add_child(Fx.box(Vector3(0.45, 0.2, 0.3), Fx.mat(Color(0.85, 0.6, 0.3)), Vector3(-1.6 + k * 0.8, 1.1, 0)))
-	_solid(Vector2(-9, -8), Vector2(4, 1.4))
+	_solid(Vector2(-9, -8), Vector2(4, 1.4), 1.2)
 	# Stables
 	var stab := Node3D.new()
 	stab.position = Vector3(26, 0, 24)
@@ -1724,7 +2181,7 @@ func _build_outside() -> void:
 		for gz in 3:
 			var tp := gy + Vector3(-5 + gx * 3.0, 0, -3 + gz * 3.0)
 			add_child(Fx.box(Vector3(0.8, 1.0, 0.2), tomb, tp + Vector3(0, 0.5, 0)))
-			_solid(Vector2(tp.x, tp.z), Vector2(0.8, 0.3))
+			_solid(Vector2(tp.x, tp.z), Vector2(0.8, 0.3), 1.0)
 	var wren := Label3D.new()
 	wren.text = "WREN"
 	wren.font = UiArt.pixel_font()
@@ -1763,12 +2220,58 @@ func _build_outside() -> void:
 		if not ok:
 			continue
 		placed += 1
-		var hgt := rng.randf_range(2.5, 4.5)
-		add_child(Fx.box(Vector3(0.4, hgt, 0.4), trunk, p + Vector3(0, hgt * 0.5, 0)))
-		var lm: Material = leaves[rng.randi() % leaves.size()]
-		add_child(Fx.box(Vector3(2.4, 1.6, 2.4), lm, p + Vector3(0, hgt + 0.4, 0)))
-		add_child(Fx.box(Vector3(1.5, 1.0, 1.5), lm, p + Vector3(0, hgt + 1.5, 0)))
+		# Voxel trees made in Blender: oaks in the lowlands, pines (some snow-dusted) to the north
+		var pine := p.z < -40.0 and rng.randf() < 0.7
+		var model := ("tree_pine_%d" % (rng.randi() % 2)) if pine else ("tree_oak_%d" % (rng.randi() % 3))
+		var tree := Vox.prop(model)
+		if tree:
+			tree.position = p
+			tree.rotation.y = rng.randi_range(0, 3) * PI * 0.5
+			tree.scale = Vector3.ONE * rng.randf_range(0.85, 1.25)
+			add_child(tree)
+		else:
+			var hgt := rng.randf_range(2.5, 4.5)
+			add_child(Fx.box(Vector3(0.4, hgt, 0.4), trunk, p + Vector3(0, hgt * 0.5, 0)))
+			var lm: Material = leaves[rng.randi() % leaves.size()]
+			add_child(Fx.box(Vector3(2.4, 1.6, 2.4), lm, p + Vector3(0, hgt + 0.4, 0)))
 		_solid(Vector2(p.x, p.z), Vector2(0.6, 0.6))
+	# Rocks and bushes in the wilds, barrels and crates by the doors of the city
+	var scatter := 0
+	tries = 0
+	while scatter < 70 and tries < 800:
+		tries += 1
+		var p2 := Vector3(rng.randf_range(-88, 88), 0, rng.randf_range(-88, 64))
+		if absf(p2.x) < WALL + 3.0 and absf(p2.z) < WALL + 3.0:
+			continue
+		if wet_at(p2) > Parchment.SHORE - 0.02 or blocked(p2):
+			continue
+		var near_road := false
+		for seg in roads:
+			if _seg_dist(p2, seg[0], seg[1]) < 3.0:
+				near_road = true
+		if near_road:
+			continue
+		var is_rock := rng.randf() < 0.45
+		var prop := Vox.prop(("rock_%d" % (rng.randi() % 3)) if is_rock else "bush")
+		if prop == null:
+			break
+		prop.position = p2
+		prop.rotation.y = rng.randf() * TAU
+		prop.scale = Vector3.ONE * rng.randf_range(0.7, 1.3)
+		add_child(prop)
+		if is_rock:
+			_solid(Vector2(p2.x, p2.z), Vector2(1.2, 1.2) * prop.scale.x, 0.8 * prop.scale.x)
+		scatter += 1
+	for spot in [Vector3(-11.5, 0, 10.5), Vector3(-12.5, 0, 11.2), Vector3(13.5, 0, -10.5), Vector3(12.8, 0, -11.4),
+			Vector3(-20.5, 0, -9.5), Vector3(-27.5, 0, -10.0), Vector3(-6.5, 0, -9.6), Vector3(9.5, 0, 13.5), Vector3(30.5, 0, 4.5)]:
+		var is_barrel := rng.randf() < 0.55
+		var thing := Vox.prop("barrel" if is_barrel else "crate")
+		if thing == null or blocked(spot):
+			continue
+		thing.position = spot
+		thing.rotation.y = rng.randf() * TAU
+		add_child(thing)
+		_solid(Vector2(spot.x, spot.z), Vector2(0.75, 0.75), 0.8 if is_barrel else 0.76)
 
 
 func _seg_dist(p: Vector3, a: Vector3, b: Vector3) -> float:
@@ -1814,7 +2317,7 @@ func _build_lairs() -> void:
 					var seg := Fx.box(Vector3(4.2, 2.2, 0.6), wallm, Vector3(cos(a) * 10.0, 1.1, sin(a) * 10.0))
 					seg.rotation.y = -a + PI / 2.0
 					node.add_child(seg)
-					_solid(Vector2(c.x + cos(a) * 10.0, c.z + sin(a) * 10.0), Vector2(2.2, 2.2))
+					_solid(Vector2(c.x + cos(a) * 10.0, c.z + sin(a) * 10.0), Vector2(2.2, 2.2), 2.2)
 			"pyre":
 				node.add_child(Fx.box(Vector3(0.4, 5.0, 0.4), Fx.mat(Color(0.3, 0.2, 0.12)), Vector3(0, 2.5, -4)))
 				for k in 6:
@@ -2029,7 +2532,7 @@ func _build_chests() -> void:
 		if sealed > 0:
 			lid.add_child(Fx.box(Vector3(0.22, 0.22, 0.06), Fx.mat(Color(0.3, 0.6, 1.0), 4.0), Vector3(0, 0.0, -0.69)))
 		chests.append({"node": node, "lid": lid, "pos": p, "sealed": sealed, "id": i})
-		_solid(Vector2(p.x, p.z), Vector2(1.0, 0.65))
+		_solid(Vector2(p.x, p.z), Vector2(1.0, 0.65), 0.7)
 
 
 # =============================================================================
@@ -2098,6 +2601,7 @@ func _spawn_day_boss() -> void:
 	var e = EnemyScript.new()
 	e.ow = self
 	e.kind = d["kind"]
+	e.model_id = d["id"]
 	e.is_boss = true
 	e.display_name = d["name"]
 	e.max_hp = d["hp"]
@@ -2126,8 +2630,7 @@ func _build_weapon() -> void:
 	# leaves the fist on the thumb side (-X for the right hand), angled a little forward.
 	weapon_node.position = Vector3(0.0, -0.03, -0.085)
 	weapon_node.rotation = Vector3(0, PI / 2.0 - 0.3, 0)
-	walker.right_hand.add_child(weapon_node)
-	walker.holding = true
+	walker.set_weapon(weapon_node, W["color"])
 
 
 # =============================================================================
@@ -2144,10 +2647,25 @@ func _build_hud() -> void:
 	hud_layer.add_child(hud)
 	hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hurt_overlay = ColorRect.new()
-	hurt_overlay.color = Color(0.6, 0.0, 0.0, 0.0)
+	hurt_overlay.color = Color(0.75, 0.02, 0.02, 0.0)
+	hurt_overlay.material = Fx.vignette_material()
 	hurt_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hud.add_child(hurt_overlay)
 	hurt_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# Letterbox bars for the dusk cutscene (closed until then)
+	for top in [true, false]:
+		var bar := ColorRect.new()
+		bar.color = Color(0, 0, 0, 1)
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hud.add_child(bar)
+		bar.anchor_left = 0.0
+		bar.anchor_right = 1.0
+		bar.anchor_top = 0.0 if top else 1.0
+		bar.anchor_bottom = 0.0 if top else 1.0
+		bar.offset_top = 0.0
+		bar.offset_bottom = 0.0
+		bar.set_meta("top", top)
+		letterbox.append(bar)
 
 	# Top-left: purse and clock
 	var tl: PanelContainer = game.hud_panel()
@@ -2416,9 +2934,16 @@ func _autoplay(delta: float) -> void:
 		walker.move_input = Vector2.ZERO
 		return
 	if dusk_state == "walking":
-		walker.move_input = Vector2.ZERO
-		walker.look_toward(stranger.global_position + Vector3(0, 1.6, 0), delta)
+		_cutscene_walk(delta)
 		return
+	# Once a day: look over the blades (exercises the inventory and upgrades).
+	if not bot_inventory_done and t > 2.0:
+		bot_inventory_done = true
+		open_inventory()
+		return
+	# Hop now and then, and roll out of a charge.
+	if walker.on_ground and randf() < delta * 0.3:
+		walker.try_jump()
 	# Parry anything about to land.
 	for e in enemies:
 		if is_instance_valid(e) and not e.dead and e.state == "windup" and e.windup_ticks - e.state_ticks <= 1:
@@ -2611,6 +3136,7 @@ func _compass_short(v: Vector3) -> String:
 func _talk_edda() -> void:
 	var tone := Dialogue.tone()
 	npcs["edda"].talk()
+	game.dialogue_speaker = npcs["edda"]
 	Sfx.play("click", -4.0, 0.8)
 	var q := _quest()
 	var opts: Array = []
@@ -2809,7 +3335,7 @@ func _build_secrets() -> void:
 				var bell := Fx.cylinder(0.45, 0.8, 1.1, Fx.mat(Color(0.6, 0.42, 0.2), 0.2), Vector3(0, 0.55, 0))
 				bell.rotation.z = 0.25
 				n.add_child(bell)
-				_solid(Vector2(n.position.x, n.position.z), Vector2(1.4, 1.4))
+				_solid(Vector2(n.position.x, n.position.z), Vector2(1.4, 1.4), 1.1)
 			"river_ring":
 				var rt := TorusMesh.new()
 				rt.inner_radius = 0.07
@@ -2860,8 +3386,8 @@ func _read_secret(sec: Dictionary) -> void:
 		text += "\n\nSECRET %d / %d FOUND  ·  +4 CROWNS" % [GameState.secrets.size(), Side.SECRETS.size()]
 		print("[SECRET] %s (%d / %d)" % [id, GameState.secrets.size(), Side.SECRETS.size()])
 		if sec.has("weapon"):
-			GameState.weapon = sec["weapon"]
-			GameState.weapon_tune = 0
+			GameState.give_weapon(sec["weapon"])
+			GameState.equip_weapon(sec["weapon"])
 			_build_weapon()
 			_refresh_props()
 			text += "\nYOU TAKE UP %s" % str(Dialogue.WEAPONS[sec["weapon"]]["name"]).to_upper()

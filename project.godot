@@ -19,6 +19,7 @@ config/features=PackedStringArray("4.7", "Forward Plus")
 
 GameState="*res://scripts/game_state.gd"
 Sfx="*res://scripts/sfx.gd"
+Settings="*res://scripts/settings.gd"
 
 [display]
 
@@ -30,3 +31,4 @@ window/stretch/aspect="expand"
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0
+textures/vram_compression/import_etc2_astc=true

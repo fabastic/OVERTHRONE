@@ -803,6 +803,19 @@ const ICONS := {
 		"yyyyyyyyyyy.",
 		"rrrrrrrrrrr.",
 	],
+	"chest": [
+		"............",
+		"..oooooooo..",
+		".oryyyyyyro.",
+		".orrrrrrrro.",
+		".oyyywwyyyo.",
+		"oooooccooooo",
+		".orrryyrrro.",
+		".oyrrrrrryo.",
+		".orrrrrrrro.",
+		".oyrrrrrryo.",
+		".oooooooooo.",
+	],
 	"rite": [
 		"............",
 		"....yyyy....",
@@ -959,6 +972,10 @@ static func pixel_font() -> FontFile:
 	f.fallbacks = fb
 	_cache["font"] = f
 	return f
+
+
+static func has_icon(id: String) -> bool:
+	return ICONS.has(id)
 
 
 static func icon(id: String) -> ImageTexture:

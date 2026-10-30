@@ -11,6 +11,7 @@ extends Node3D
 const Fx := preload("res://scripts/fx.gd")
 const Dialogue := preload("res://scripts/dialogue.gd")
 const PixTex := preload("res://scripts/pixtex.gd")
+const Vox := preload("res://scripts/vox.gd")
 
 const MUTTER := [
 	["Don't look at him.", "Get inside. Now.", "Saints, it's HIM.", "Hide the children.", "Please, not today."],
@@ -179,6 +180,10 @@ func _build() -> void:
 		torso.add_child(lute)
 		lute.add_child(Fx.sphere(0.15, PixTex.mat(PixTex.planks(Color(0.6, 0.38, 0.18)), 0.4, false), Vector3(0, -0.1, 0)))
 		lute.add_child(Fx.box(Vector3(0.05, 0.4, 0.04), PixTex.mat(PixTex.grain(Color(0.3, 0.18, 0.1)), 0.3, false), Vector3(0, 0.2, 0)))
+	# The voxel body made in Blender replaces the boxes (named people have their own; townsfolk
+	# wear one of eight).
+	var model := "npc_" + npc_id if npc_id != "" and Vox.exists("npc_" + npc_id) else "folk_%d" % (absi(hash(npc_id if npc_id != "" else str(get_instance_id()))) % 8)
+	Vox.voxify(model, {"leg_l": leg_l, "leg_r": leg_r, "torso": torso, "head": head, "arm_l": arm_l, "arm_r": arm_r})
 
 
 func _build_hat(o: Dictionary, hs: float) -> void:
@@ -224,6 +229,11 @@ func _build_hat(o: Dictionary, hs: float) -> void:
 			var fe := Fx.box(Vector3(0.03, 0.3, 0.08), _cloth_mat(Color(0.95, 0.85, 0.35)), Vector3(-0.12, hs + 0.2, 0.05))
 			fe.rotation.z = 0.5
 			head.add_child(fe)
+
+
+## Where the face is, for the conversation portrait.
+func portrait_height() -> float:
+	return 1.36 * scale.y
 
 
 func talk() -> void:

@@ -11,6 +11,16 @@ const INK_SOFT := Color(0.3, 0.17, 0.08, 0.55)
 const WATER := Color(0.22, 0.34, 0.4, 0.5)
 const RED := Color(0.62, 0.1, 0.06)
 const WORLD := 100.0
+# Map badges: what each kind of place looks like, and the legend
+const POI_COL := {
+	"tavern": Color(0.85, 0.55, 0.15), "forge": Color(0.8, 0.3, 0.12), "church": Color(0.92, 0.9, 0.8),
+	"clock": Color(0.25, 0.6, 0.6), "stable": Color(0.55, 0.38, 0.2), "fountain": Color(0.3, 0.55, 0.85),
+	"bridge": Color(0.5, 0.5, 0.52), "gate": Color(0.42, 0.4, 0.38), "npc": Color(0.35, 0.65, 0.3),
+	"chest": Color(0.95, 0.75, 0.2), "lair": Color(0.62, 0.1, 0.06), "story": Color(1.0, 0.82, 0.35),
+}
+const LEGEND := [["story", "THE STORY (G TO PING)"], ["lair", "LAIR / TODAY'S BOSS"], ["npc", "SOMEONE TO TALK TO"],
+	["tavern", "TAVERN"], ["forge", "FORGE"], ["church", "CATHEDRAL"], ["clock", "CLOCKTOWER"], ["stable", "STABLES"],
+	["fountain", "FOUNTAIN"], ["bridge", "THE OLD BRIDGE"], ["gate", "CITY GATE"], ["chest", "UNOPENED CHEST"]]
 
 var ow
 var mini := false
@@ -47,9 +57,11 @@ func _draw() -> void:
 		focus = Vector2(wp.x, wp.z)
 		origin = size * 0.5
 	else:
-		s = minf(size.x, size.y) / (WORLD * 2.0)
+		# Leave a column on the left for the legend
+		var legend_w := 262.0
+		s = minf(size.x - legend_w, size.y) / (WORLD * 2.0)
 		focus = Vector2.ZERO
-		origin = size * 0.5
+		origin = Vector2(legend_w + (size.x - legend_w) * 0.5, size.y * 0.5)
 	# The paper
 	var tl := w2m(Vector3(-WORLD, 0, -WORLD))
 	draw_texture_rect(tex, Rect2(tl, Vector2(WORLD * 2.0, WORLD * 2.0) * s), false)
@@ -110,6 +122,23 @@ func _draw() -> void:
 		_text(w2m(Vector3(-60, 0, 22)) + Vector2(-60, 0), "THE GRAVES", INK, 120)
 		_text(w2m(Vector3(-40, 0, 80)) + Vector2(-60, 0), "THE RIVER", Color(0.2, 0.3, 0.35), 120)
 		_compass_rose(Vector2(size.x - 60, 60))
+	# Points of interest: a coloured badge with a little glyph for each kind of place
+	for poi in ow.map_pois():
+		var pp := w2m(poi["pos"])
+		if mini and (pp.x < -8 or pp.y < -8 or pp.x > size.x + 8 or pp.y > size.y + 8):
+			continue
+		_badge(pp, str(poi["kind"]), 4.5 if mini else 6.5)
+	# The story: a pulsing gold ring on the next step
+	var st: Dictionary = ow.story_target()
+	if not st.is_empty():
+		var spp := w2m(st["pos"])
+		var pulse := fmod(Time.get_ticks_msec() / 900.0, 1.0)
+		draw_arc(spp, 6.0 + pulse * (10.0 if mini else 16.0), 0.0, TAU, 24, Color(1.0, 0.82, 0.35, 1.0 - pulse), 2.0)
+		_badge(spp, "story", 5.0 if mini else 7.5)
+		if not mini:
+			_text(spp + Vector2(-90, 9), str(st["label"]), Color(0.55, 0.32, 0.02), 180)
+	if not mini:
+		_legend(Vector2(10, maxf(10.0, size.y * 0.5 - (LEGEND.size() * 18 + 14) * 0.5)))
 	# Marks: the secrets you have found, the errand, today's boss, and you
 	for sec in ow.Side.SECRETS:
 		if GameState.secrets.has(sec["id"]):
@@ -128,6 +157,60 @@ func _draw() -> void:
 	draw_polyline(PackedVector2Array([me + fwd * 9.0, me - fwd * 5.0 + side * 5.0, me - fwd * 2.0, me - fwd * 5.0 - side * 5.0, me + fwd * 9.0]), Color(0.15, 0.05, 0.02), 1.0)
 	if mini:
 		_text(Vector2(4, 2), "N", RED, 20)
+
+
+## A round badge with a dark rim and a glyph for the kind of place.
+func _badge(c: Vector2, kind: String, r: float) -> void:
+	var col: Color = POI_COL.get(kind, INK)
+	draw_circle(c, r + 1.5, Color(0.12, 0.06, 0.02, 0.9))
+	draw_circle(c, r, col)
+	var g := Color(0.1, 0.05, 0.02)
+	var u := r / 6.0
+	match kind:
+		"tavern":  # a mug
+			draw_rect(Rect2(c + Vector2(-3, -3) * u, Vector2(4.5, 6) * u), g, false, 1.0)
+			draw_arc(c + Vector2(2.2, 0) * u, 1.8 * u, -PI / 2.0, PI / 2.0, 6, g, 1.0)
+		"forge":  # an anvil
+			draw_colored_polygon(PackedVector2Array([c + Vector2(-4, -2) * u, c + Vector2(4, -2) * u, c + Vector2(2, 0) * u, c + Vector2(1.5, 3) * u, c + Vector2(-1.5, 3) * u, c + Vector2(-2, 0) * u]), g)
+		"church":  # a cross
+			draw_line(c + Vector2(0, -4) * u, c + Vector2(0, 4) * u, g, 1.5)
+			draw_line(c + Vector2(-2.5, -1.5) * u, c + Vector2(2.5, -1.5) * u, g, 1.5)
+		"clock":
+			draw_arc(c, 3.5 * u, 0.0, TAU, 12, g, 1.0)
+			draw_line(c, c + Vector2(0, -2.6) * u, g, 1.0)
+			draw_line(c, c + Vector2(2, 0) * u, g, 1.0)
+		"stable":  # a horseshoe
+			draw_arc(c + Vector2(0, -0.5) * u, 3.0 * u, PI * 0.15, PI * 1.85, 10, g, 1.5)
+		"fountain":  # a drop
+			draw_colored_polygon(PackedVector2Array([c + Vector2(0, -4) * u, c + Vector2(2.5, 1) * u, c + Vector2(0, 3.5) * u, c + Vector2(-2.5, 1) * u]), g)
+		"bridge", "gate":  # an arch
+			draw_arc(c + Vector2(0, 1.5) * u, 3.0 * u, PI, TAU, 8, g, 1.5)
+			draw_line(c + Vector2(-3, 1.5) * u, c + Vector2(-3, 3.5) * u, g, 1.5)
+			draw_line(c + Vector2(3, 1.5) * u, c + Vector2(3, 3.5) * u, g, 1.5)
+		"npc":  # a person
+			draw_circle(c + Vector2(0, -1.8) * u, 1.6 * u, g)
+			draw_rect(Rect2(c + Vector2(-2.5, 0.5) * u, Vector2(5, 3) * u), g)
+		"chest":
+			draw_rect(Rect2(c + Vector2(-3.5, -2) * u, Vector2(7, 5) * u), g, false, 1.0)
+			draw_line(c + Vector2(-3.5, 0) * u, c + Vector2(3.5, 0) * u, g, 1.0)
+		"lair":  # crossed blades
+			draw_line(c + Vector2(-3, -3) * u, c + Vector2(3, 3) * u, Color(1, 0.9, 0.8), 1.5)
+			draw_line(c + Vector2(-3, 3) * u, c + Vector2(3, -3) * u, Color(1, 0.9, 0.8), 1.5)
+		"story":  # a diamond
+			draw_colored_polygon(PackedVector2Array([c + Vector2(0, -4) * u, c + Vector2(3, 0) * u, c + Vector2(0, 4) * u, c + Vector2(-3, 0) * u]), Color(0.45, 0.25, 0.0))
+
+
+## What the badges mean, on a little paper slip.
+func _legend(tl: Vector2) -> void:
+	var h := LEGEND.size() * 18 + 14
+	draw_rect(Rect2(tl - Vector2(4, 4), Vector2(250, h)), Color(0.93, 0.85, 0.66, 0.85))
+	draw_rect(Rect2(tl - Vector2(4, 4), Vector2(250, h)), INK, false, 1.0)
+	for k in LEGEND.size():
+		var row: Array = LEGEND[k]
+		var c := tl + Vector2(10, 10 + k * 18)
+		_badge(c, row[0], 6.0)
+		var base := c + Vector2(14, 5)
+		draw_string(font, base, row[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 16, INK)
 
 
 func _star(c: Vector2, r: float, col: Color) -> void:

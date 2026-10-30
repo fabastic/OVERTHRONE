@@ -8,6 +8,7 @@ extends Node3D
 
 const Fx := preload("res://scripts/fx.gd")
 const PixTex := preload("res://scripts/pixtex.gd")
+const Vox := preload("res://scripts/vox.gd")
 
 var seated := false
 var walking := false
@@ -30,6 +31,7 @@ var face: Node3D
 var thorns: Array[Node3D] = []
 var shackles: Array[Node3D] = []
 var glow: OmniLight3D
+var vox_variant := -1
 
 
 func _ready() -> void:
@@ -112,9 +114,28 @@ func _build() -> void:
 	add_child(glow)
 
 
+## The voxel Stranger (Blender): three versions, white, grey and black, chosen by corruption.
+func _apply_vox() -> void:
+	var v := clampi(roundi(GameState.stranger_corruption() * 2.0), 0, 2)
+	if v == vox_variant:
+		return
+	vox_variant = v
+	var keep: Array = []
+	keep.append_array(thorns)
+	keep.append_array(shackles)
+	Vox.voxify("stranger_%d" % v, {"leg_l": leg_l, "leg_r": leg_r, "torso": torso, "arm_l": arm_l, "arm_r": arm_r,
+		"face": face, "hood": hood}, keep)
+
+
+## Where the face is, for the conversation portrait.
+func portrait_height() -> float:
+	return 1.68
+
+
 ## Re-read the run state: how much rot he carries, and whether you know who he is.
 func refresh() -> void:
 	corruption = GameState.stranger_corruption()
+	_apply_vox()
 	var c := corruption
 	var robe := Color(0.94, 0.93, 0.9).lerp(Color(0.5, 0.48, 0.5), clampf(c * 1.6, 0.0, 1.0))
 	robe = robe.lerp(Color(0.07, 0.05, 0.09), clampf(c * 1.6 - 0.6, 0.0, 1.0))

@@ -1,52 +1,42 @@
 extends Control
 ## The Throne of Thought, drawn as a pixel-art Tree of Life, in three pages:
-##   GRIMOIRE   seven CLASSES, one per bough: skills inward, the class sigil at the tip.
-##              Click a sigil to unlock the class (Crowns) or make it your active class.
-##   ASCENSION  four perk branches bought with Dread (kept for the whole run)
-##   ETERNITY   permanent upgrades bought with Crowns (earned when a hero conquers you)
-## On every page the crown is your loadout and the roots are the Rite of Summoning.
-## Mouse: hover for details, click to equip / buy / perform the rite, click tabs to switch.
-## Keys:  Q/E or TAB switch pages, arrows move, SPACE activates, ENTER continues, ESC leaves the rite.
+##   GRIMOIRE   seven CLASSES, one per curved bough: skills along the bough, the class emblem at its tip.
+##              Click an emblem to unlock the class (Crowns) or make it your active class.
+##   ASCENSION  six perk boughs bought with Dread (they reset at dawn, 10% stronger each night)
+##   ETERNITY   permanent upgrades bought with Crowns
+## The crown of the tree is your LOADOUT, in any order you like: pick a skill up (click, or drag it)
+## and drop it on a slot, or press 1-5 over a skill to put it in that slot. Right-click unequips.
+## The roots hold the SUMMONING CHEST (Dread): open it for a new power (see GameState.pull).
+## Every skill reads at a glance: SEALED (dark), OWNED (framed in its rarity), EQUIPPED (a glowing
+## ring and its slot number) and SELECTED (bouncing brackets). A legend sits bottom-left.
 ## Laid out on a fixed 426x240 art grid scaled 3x, so it fits any window.
 
 signal let_him_come
 
 const UiArt := preload("res://scripts/ui/ui_art.gd")
+const ClassArt := preload("res://scripts/ui/class_art.gd")
 const S := 3
 const W := 426
 const H := 240
 const TRUNK_X := 213
-const CROWN_Y := 48
-const ROOT_Y := 198
-const ROW_Y := [84, 111, 138, 165]
-const LEFT_X := [162, 138, 114, 90, 66, 42]    # inner -> outer
-const RIGHT_X := [264, 288, 312, 336, 360, 384]
-# Class boughs: [side, row, class id]
-const CLASS_ROWS := [["L", 0, "pyro"], ["L", 1, "bone"], ["L", 2, "rime"], ["L", 3, "war"],
-	["R", 0, "storm"], ["R", 1, "void"], ["R", 2, "blood"]]
+const CROWN_Y := 57
+const ROOT_Y := 206
+const TAB_Y := 33
 const PAGES := ["grimoire", "ascension", "eternity"]
 const PAGE_TITLES := ["GRIMOIRE", "ASCENSION", "ETERNITY"]
+const CLASS_ORDER_L := ["pyro", "bone", "rime", "war"]
+const CLASS_ORDER_R := ["storm", "void", "blood"]
 
-# [side, row, label, ids inner -> outer]
-const ASCENSION_ROWS := [
-	["L", 0, "TYRANNY", ["vigor", "wrath", "presence", "colossal"]],
-	["L", 1, "CUNNING", ["haste", "unreadable", "fog", "misdirect"]],
-	["L", 2, "MOTION", ["fleet", "afterimage", "phantom", "widedais"]],
-	["R", 0, "HUNGER", ["harvest", "generous", "fated", "bottomless"]],
-	["R", 1, "GUARD", ["talons", "scale", "riposte", "bastion"]],
-	["R", 2, "SORCERY", ["overflow", "echo", "surge", "archmage"]],
-]
-const ETERNITY_ROWS := [
-	["L", 0, "", ["colossus", "might"]],
-	["L", 1, "", ["grudge"]],
-	["L", 2, "", ["fate"]],
-	["R", 0, "", ["unknowable"]],
-	["R", 1, "", ["finger"]],
-	["R", 2, "", ["reflex"]],
-]
+# [label, ids]
+const ASCENSION_L := [["TYRANNY", ["vigor", "wrath", "presence", "colossal"]], ["CUNNING", ["haste", "unreadable", "fog", "misdirect"]],
+	["MOTION", ["fleet", "afterimage", "phantom", "widedais"]]]
+const ASCENSION_R := [["HUNGER", ["harvest", "generous", "fated", "bottomless"]], ["GUARD", ["talons", "scale", "riposte", "bastion"]],
+	["SORCERY", ["overflow", "echo", "surge", "archmage"]]]
+const ETERNITY_L := [["MIGHT", ["colossus", "might"]], ["GRUDGE", ["grudge"]], ["FATE", ["fate"]]]
+const ETERNITY_R := [["MIND", ["unknowable"]], ["HAND", ["finger"]], ["REFLEX", ["reflex"]]]
 const NODE_SIZE := 21
 const ROOT_SIZE := 27
-const TIP_W := 372
+const TIP_W := 384
 
 static var _backdrop: ImageTexture
 
@@ -59,22 +49,17 @@ var GOLD := Color("ffd27a")
 var RED := Color("c03a28")
 var TEXT := Color("ecdfc8")
 var MUTED := Color("9a8a9a")
-var LINK_OFF := Color("4a2a2e")
+var LINK_OFF := Color("3a2a3a")
 var PANEL := Color("140c1c")
 var CROWN_COL := Color("ffcf4a")
-var FRAMES := {
-	"lit": [Color("f29a2e"), Color("2a1626"), Color("7a2a20")],
-	"equip": [Color("ffe08a"), Color("3a1c22"), Color("f29a2e")],
-	"avail": [Color("ff5a3a"), Color("2a1626"), Color("c03a28")],
-	"dim": [Color("5a3a34"), Color("1c1426"), Color("33222a")],
-}
+var EQUIP_COL := Color("fff2b0")
 
 var game
 var font: Font
 var page := "grimoire"
 var go_label := "LET HIM COME"
 var nodes: Array = []
-var rows: Array = []
+var boughs: Array = []     # {side, ids, kind, label, cls, s, c, e, node_t}
 var focus := -1
 var go_hot := false
 var go_rect := Rect2()
@@ -83,12 +68,13 @@ var t := 0.0
 var shakes := {}
 var sparks: Array = []
 var done := false
-var lock_focus := false  # set by previews so stray mouse events don't clear the tooltip
+var lock_focus := false
+var held := ""             # a skill picked up, to be dropped on a loadout slot
+var drag_from := -1
+var mouse := Vector2.ZERO
 
-var rite := ""  # "", "spin", "reveal"
+var rite := ""             # "", "shake", "open", "reveal"  (the summoning chest)
 var rite_t := 0.0
-var rite_speed := 1.5
-var needle := 0.5
 var reveal := {}
 var auto_t := 0.8
 
@@ -102,55 +88,90 @@ func _ready() -> void:
 
 
 # =============================================================================
-# Layout
+# Layout: curved boughs off the trunk
 # =============================================================================
 
 func set_page(p: String) -> void:
 	page = p
 	focus = -1
+	held = ""
 	_build_nodes()
+
+
+func _bough_curve(side: float, idx: int, count: int) -> Array:
+	var span := 104.0
+	var step := span / maxf(1.0, count - 1)
+	var ys := 192.0 - idx * step if count > 1 else 150.0
+	var s := Vector2(TRUNK_X + side * 5.0, ys)
+	var c := Vector2(TRUNK_X + side * 96.0, ys + 3.0)
+	var e := Vector2(TRUNK_X + side * 178.0, ys - 30.0)
+	return [s, c, e]
+
+
+static func _bez(a: Vector2, b: Vector2, c: Vector2, u: float) -> Vector2:
+	return a.lerp(b, u).lerp(b.lerp(c, u), u)
 
 
 func _build_nodes() -> void:
 	nodes.clear()
+	boughs.clear()
 	var n := GameState.loadout_size()
 	for i in n:
-		nodes.append({"kind": "slot", "id": "", "index": i, "pos": Vector2(TRUNK_X + (i - (n - 1) * 0.5) * 26, CROWN_Y), "size": 19})
+		nodes.append({"kind": "slot", "id": "", "index": i, "pos": Vector2(TRUNK_X + (i - (n - 1) * 0.5) * 27, CROWN_Y), "size": 19})
+	var rows_l: Array = []
+	var rows_r: Array = []
 	var kind := "skill"
-	rows = _grimoire_rows()
-	if page == "ascension":
-		kind = "perk"
-		rows = ASCENSION_ROWS
-	elif page == "eternity":
-		kind = "eternal"
-		rows = ETERNITY_ROWS
-	for row in rows:
-		var ids: Array = row[3]
-		for c in ids.size():
-			nodes.append({"kind": kind, "id": ids[c], "pos": _row_pos(row, c), "size": NODE_SIZE})
-		if row.size() > 4:
-			nodes.append({"kind": "class", "id": row[4], "pos": _row_pos(row, ids.size()), "size": NODE_SIZE})
+	match page:
+		"grimoire":
+			for cid in CLASS_ORDER_L:
+				rows_l.append([GameState.CLASSES[cid]["name"], _class_ids(cid), cid])
+			for cid in CLASS_ORDER_R:
+				rows_r.append([GameState.CLASSES[cid]["name"], _class_ids(cid), cid])
+		"ascension":
+			kind = "perk"
+			rows_l = ASCENSION_L
+			rows_r = ASCENSION_R
+		"eternity":
+			kind = "eternal"
+			rows_l = ETERNITY_L
+			rows_r = ETERNITY_R
+	for pair in [[-1.0, rows_l], [1.0, rows_r]]:
+		var side: float = pair[0]
+		var rows: Array = pair[1]
+		for i in rows.size():
+			var row: Array = rows[i]
+			var curve := _bough_curve(side, i, rows.size())
+			var ids: Array = row[1]
+			var b := {"side": side, "ids": ids, "kind": kind, "label": row[0], "cls": row[2] if row.size() > 2 else "",
+				"s": curve[0], "c": curve[1], "e": curve[2], "ts": []}
+			var cnt := ids.size()
+			for k in cnt:
+				var u := 0.2 + 0.68 * (k + 0.5) / maxf(cnt, 4.0) if cnt < 6 else 0.17 + 0.71 * (k + 0.5) / cnt
+				b["ts"].append(u)
+				nodes.append({"kind": kind, "id": ids[k], "pos": _bez(curve[0], curve[1], curve[2], u).round(), "size": NODE_SIZE, "bough": boughs.size()})
+			if b["cls"] != "":
+				nodes.append({"kind": "class", "id": b["cls"], "pos": curve[2].round(), "size": 25, "bough": boughs.size()})
+			boughs.append(b)
 	nodes.append({"kind": "rite", "id": "rite", "pos": Vector2(TRUNK_X, ROOT_Y), "size": ROOT_SIZE})
 
 
-func _grimoire_rows() -> Array:
-	var out: Array = []
-	for cr in CLASS_ROWS:
-		var ids: Array[String] = GameState.class_skills(cr[2])
-		ids.sort_custom(func(a, b): return GameState.SKILLS[a]["rarity"] < GameState.SKILLS[b]["rarity"])
-		out.append([cr[0], cr[1], GameState.CLASSES[cr[2]]["name"], ids, cr[2]])
-	return out
-
-
-func _row_pos(row: Array, c: int) -> Vector2:
-	var xs: Array = LEFT_X if row[0] == "L" else RIGHT_X
-	return Vector2(xs[c], ROW_Y[row[1]])
+func _class_ids(cid: String) -> Array:
+	var ids: Array[String] = GameState.class_skills(cid)
+	ids.sort_custom(func(a, b): return GameState.SKILLS[a]["rarity"] < GameState.SKILLS[b]["rarity"])
+	return ids
 
 
 func node_index(kind: String, id: String) -> int:
 	for i in nodes.size():
 		if nodes[i]["kind"] == kind and nodes[i]["id"] == id:
 			return i
+	return -1
+
+
+func _slot_node(i: int) -> int:
+	for k in nodes.size():
+		if nodes[k]["kind"] == "slot" and nodes[k]["index"] == i:
+			return k
 	return -1
 
 
@@ -171,7 +192,7 @@ func _node_at(screen: Vector2) -> int:
 	for i in nodes.size():
 		var n: Dictionary = nodes[i]
 		var d: Vector2 = a - n["pos"]
-		if absf(d.x) + absf(d.y) <= n["size"] * 0.5 + 1.0:
+		if absf(d.x) + absf(d.y) <= n["size"] * 0.5 + 1.5:
 			return i
 	return -1
 
@@ -190,6 +211,7 @@ func _owned(n: Dictionary) -> bool:
 	return true
 
 
+## sealed / owned / equipped (skills); for others: dim / lit / avail / equip
 func _node_state(n: Dictionary) -> String:
 	var id: String = n["id"]
 	match n["kind"]:
@@ -197,8 +219,8 @@ func _node_state(n: Dictionary) -> String:
 			return "equip" if n["index"] < GameState.loadout.size() else "dim"
 		"skill":
 			if not GameState.owned.has(id):
-				return "dim"
-			return "equip" if GameState.loadout.has(id) else "lit"
+				return "sealed"
+			return "equipped" if GameState.loadout.has(id) else "owned"
 		"class":
 			if GameState.active_class == id:
 				return "equip"
@@ -223,32 +245,41 @@ func _node_state(n: Dictionary) -> String:
 	return "lit"
 
 
-func _icon_for(n: Dictionary) -> String:
-	match n["kind"]:
-		"slot":
-			return GameState.loadout[n["index"]] if n["index"] < GameState.loadout.size() else ""
-		"skill":
-			return n["id"] if GameState.owned.has(n["id"]) else "locked"
-		"perk", "eternal":
-			return n["id"]
-		"class":
-			return GameState.CLASSES[n["id"]]["icon"]
-	return "rite"
-
-
 # =============================================================================
 # Input
 # =============================================================================
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
+		mouse = event.position
 		go_hot = go_rect.has_point(event.position)
 		if rite == "" and not lock_focus:
-			focus = _node_at(event.position)
-	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			var f := _node_at(event.position)
+			if f != focus and f >= 0:
+				Sfx.play("ui_hover", -16.0)
+			focus = f
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		accept_event()
-		if rite == "spin":
-			_seal()
+		if rite != "":
+			return
+		if held != "":
+			held = ""
+			Sfx.play("menu_close", -8.0)
+			return
+		var ri := _node_at(event.position)
+		if ri >= 0:
+			_unequip_node(ri)
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		accept_event()
+		if not event.pressed:
+			# Drag and drop: release a dragged skill over a slot
+			if drag_from >= 0 and held != "":
+				var over := _node_at(event.position)
+				if over >= 0 and over != drag_from and nodes[over]["kind"] == "slot":
+					_drop(nodes[over]["index"])
+			drag_from = -1
+			return
+		if rite == "shake" or rite == "open":
 			return
 		if rite == "reveal":
 			_close_rite()
@@ -265,6 +296,8 @@ func _gui_input(event: InputEvent) -> void:
 		if i >= 0:
 			focus = i
 			_activate(i)
+			if held != "":
+				drag_from = i
 
 
 func _input(event: InputEvent) -> void:
@@ -274,23 +307,37 @@ func _input(event: InputEvent) -> void:
 	var handled := true
 	match key.keycode:
 		KEY_SPACE:
-			if rite == "spin":
-				_seal()
-			elif rite == "reveal":
+			if rite == "reveal":
 				if GameState.can_pull():
 					_open_rite()
 				else:
 					_close_rite()
-			elif focus >= 0:
-				_activate(focus)
-			else:
-				focus = _default_focus()
+			elif rite == "":
+				if focus >= 0:
+					_activate(focus)
+				else:
+					focus = _default_focus()
 		KEY_ENTER, KEY_KP_ENTER:
 			if rite == "":
 				_go()
 		KEY_ESCAPE:
-			if rite != "":
+			if rite == "reveal":
 				_close_rite()
+			elif held != "":
+				held = ""
+			else:
+				handled = false
+		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6:
+			# Put the skill under the cursor (or the one in hand) into that slot.
+			var slot := key.keycode - KEY_1
+			var id := held
+			if id == "" and focus >= 0 and nodes[focus]["kind"] == "skill":
+				id = nodes[focus]["id"]
+			if id != "" and GameState.owned.has(id) and slot < GameState.loadout_size():
+				held = id
+				_drop(slot)
+			else:
+				handled = false
 		KEY_Q:
 			_cycle_page(-1)
 		KEY_E, KEY_TAB:
@@ -345,6 +392,34 @@ func _move_focus(dir: Vector2) -> void:
 			best = i
 	if best >= 0:
 		focus = best
+		Sfx.play("ui_hover", -16.0)
+
+
+## Drop the skill in hand into loadout slot `slot` (swapping if it was elsewhere).
+func _drop(slot: int) -> void:
+	if held == "":
+		return
+	GameState.place_in_slot(held, slot)
+	var si := _slot_node(mini(slot, GameState.loadout.size() - 1))
+	if si >= 0:
+		_burst(nodes[si]["pos"], GOLD, 16)
+	Sfx.play("coin", -6.0)
+	held = ""
+
+
+func _unequip_node(i: int) -> void:
+	var n: Dictionary = nodes[i]
+	var id := ""
+	if n["kind"] == "slot" and n["index"] < GameState.loadout.size():
+		id = GameState.loadout[n["index"]]
+	elif n["kind"] == "skill" and GameState.loadout.has(n["id"]):
+		id = n["id"]
+	if id == "" or GameState.loadout.size() <= 1:
+		_deny(i)
+		return
+	GameState.unequip(id)
+	_burst(n["pos"], ORANGE, 10)
+	Sfx.play("menu_close", -6.0)
 
 
 func _activate(i: int) -> void:
@@ -352,23 +427,23 @@ func _activate(i: int) -> void:
 	var id: String = n["id"]
 	match n["kind"]:
 		"slot":
-			if n["index"] < GameState.loadout.size() and GameState.loadout.size() > 1:
-				GameState.toggle_loadout(GameState.loadout[n["index"]])
-				_burst(n["pos"], ORANGE, 10)
-				Sfx.play("click")
+			if held != "":
+				_drop(n["index"])
+			elif n["index"] < GameState.loadout.size():
+				held = GameState.loadout[n["index"]]  # pick it up to move it
+				Sfx.play("click", -4.0)
 			else:
 				_deny(i)
 		"skill":
 			if not GameState.owned.has(id):
 				_deny(i)
 				return
-			var before := GameState.loadout.has(id)
-			GameState.toggle_loadout(id)
-			if GameState.loadout.has(id) != before:
-				_burst(n["pos"], GOLD, 14)
-				Sfx.play("click")
-			else:
-				_deny(i)
+			if held == id:
+				held = ""
+				return
+			held = id
+			Sfx.play("click", -4.0)
+			_burst(n["pos"], GOLD, 8)
 		"class":
 			if GameState.class_unlocked(id):
 				GameState.set_active_class(id)
@@ -394,7 +469,7 @@ func _activate(i: int) -> void:
 			if GameState.buy_eternity(id):
 				_burst(n["pos"], CROWN_COL, 40)
 				Sfx.play("crown", -2.0)
-				_build_nodes()  # Fifth Finger adds a crown slot.
+				_build_nodes()
 				if game:
 					game.flash(CROWN_COL, 0.25)
 			else:
@@ -416,27 +491,20 @@ func _go() -> void:
 	let_him_come.emit()
 
 
+# --- The summoning chest ------------------------------------------------------
+
 func _open_rite() -> void:
 	if not GameState.can_pull():
 		_deny(node_index("rite", "rite"))
 		rite = ""
 		return
-	rite = "spin"
-	rite_t = randf()
-	rite_speed = randf_range(1.3, 1.9) * GameState.rite_speed_mult()
-	Sfx.play("cast", -6.0, 0.6)
-
-
-func _seal() -> void:
-	var zones: Array = GameState.rite_zones()
-	var off := absf(needle - 0.5)
-	var rarity := 2 if off < zones[0] else (1 if off < zones[1] else 0)
+	held = ""
+	var rarity := GameState.roll_rarity()
 	reveal = GameState.pull(rarity)
 	reveal["t"] = 0.0
-	rite = "reveal"
-	Sfx.play("reveal" if rarity > 0 else "coin", 0.0, 1.0 + rarity * 0.1)
-	if game:
-		game.flash(GameState.RARITY_COLORS[rarity], 0.4)
+	rite = "shake"
+	rite_t = 0.0
+	Sfx.play("chest_shake", -4.0)
 
 
 func _close_rite() -> void:
@@ -474,11 +542,28 @@ func _process(delta: float) -> void:
 			continue
 		s["v"] += Vector2(0, 90.0) * delta
 		s["p"] += s["v"] * delta
-	if rite == "spin":
-		rite_t += delta * rite_speed
-		needle = pingpong(rite_t, 1.0)
-	elif rite == "reveal":
-		reveal["t"] += delta
+	if rite != "":
+		var before := rite_t
+		rite_t += delta
+		if rite == "shake":
+			# Rattles get faster and the light through the seams warms toward the rarity.
+			var beat := 0.32 - 0.18 * minf(1.0, rite_t / 1.3)
+			if fmod(rite_t, beat) < fmod(before, beat):
+				Sfx.play("chest_shake", -6.0, 1.0 + rite_t * 0.3)
+			if rite_t >= 1.4:
+				rite = "open"
+				rite_t = 0.0
+				var r: int = reveal.get("rarity", 0)
+				Sfx.play("chest_legendary" if r == 2 else "chest_open", 0.0)
+				if game:
+					game.flash(GameState.RARITY_COLORS[r], 0.35 + 0.1 * r)
+				_burst(Vector2(TRUNK_X, 112), GameState.RARITY_COLORS[r], 30 + 20 * r)
+		elif rite == "open" and rite_t >= 0.55:
+			rite = "reveal"
+			rite_t = 0.0
+			reveal["t"] = 0.0
+		elif rite == "reveal":
+			reveal["t"] = rite_t
 	if GameState.autoplay:
 		_autoplay(delta)
 	queue_redraw()
@@ -489,13 +574,11 @@ func _autoplay(delta: float) -> void:
 	if auto_t > 0.0 or done:
 		return
 	auto_t = randf_range(0.3, 0.7)
-	if rite == "spin":
-		_seal()
+	if rite == "shake" or rite == "open":
 		return
 	if rite == "reveal":
 		_close_rite()
 		return
-	# Spend Crowns first (cheapest upgrade), then Dread on rites, then perks, then continue.
 	var cheapest := ""
 	for id in GameState.ETERNITY:
 		var c := GameState.eternity_cost(id)
@@ -515,13 +598,14 @@ func _autoplay(delta: float) -> void:
 	if GameState.can_pull():
 		_open_rite()
 		return
-	for row in ASCENSION_ROWS:
-		for id in row[3]:
-			if GameState.perk_available(id) and GameState.dread >= GameState.PERKS[id]["cost"]:
-				if page != "ascension":
-					set_page("ascension")
-				_activate(node_index("perk", id))
-				return
+	for rows in [ASCENSION_L, ASCENSION_R]:
+		for row in rows:
+			for id in row[1]:
+				if GameState.perk_available(id) and GameState.dread >= GameState.PERKS[id]["cost"]:
+					if page != "ascension":
+						set_page("ascension")
+					_activate(node_index("perk", id))
+					return
 	_go()
 
 
@@ -532,7 +616,8 @@ func _autoplay(delta: float) -> void:
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), BG)
 	draw_texture_rect(_backdrop, Rect2(_origin(), Vector2(W, H) * S), false)
-	_draw_links()
+	_draw_boughs()
+	_draw_loadout_links()
 	for i in nodes.size():
 		_draw_node(i, nodes[i])
 	for s in sparks:
@@ -540,6 +625,13 @@ func _draw() -> void:
 		c.a = clampf(s["life"] * 2.0, 0.0, 1.0)
 		draw_rect(Rect2(_scr((s["p"] as Vector2).floor()), Vector2(S, S)), c)
 	_draw_header()
+	_draw_legend()
+	if held != "" and rite == "":
+		# The skill in hand follows the cursor
+		var hp := mouse - Vector2(18, 18)
+		draw_texture_rect(UiArt.diamond(NODE_SIZE, EQUIP_COL, Color("2a1626"), ORANGE), Rect2(hp - Vector2(13, 13), Vector2(NODE_SIZE, NODE_SIZE) * S), false, Color(1, 1, 1, 0.85))
+		draw_texture_rect(UiArt.icon(held), Rect2(hp + Vector2(0, 0), Vector2(36, 36)), false)
+		_str(mouse + Vector2(26, 6), "DROP ON A SLOT · 1-5", 16, GOLD)
 	if rite != "":
 		_draw_rite()
 	elif focus >= 0 and focus < nodes.size():
@@ -554,38 +646,82 @@ func _vline(x: float, y0: float, y1: float, col: Color) -> void:
 	draw_rect(Rect2(_scr(Vector2(x, minf(y0, y1))), Vector2(1.0, absf(y1 - y0) + 1.0) * S), col)
 
 
-func _dot(p: Vector2, col: Color) -> void:
-	_hline(p.x - 1, p.x + 1, p.y, col)
-	_vline(p.x, p.y - 1, p.y + 1, col)
-
-
-func _draw_links() -> void:
-	var n := GameState.loadout_size()
+## Each bough: a tapering curved branch; the stretch up to the last owned node glows.
+func _draw_boughs() -> void:
 	_vline(TRUNK_X, CROWN_Y, ROOT_Y, ORANGE)
-	_hline(TRUNK_X - (n - 1) * 13, TRUNK_X + (n - 1) * 13, CROWN_Y, ORANGE)
-	var kind := "skill" if page == "grimoire" else ("perk" if page == "ascension" else "eternal")
-	for row in rows:
-		var ids: Array = row[3]
-		if row.size() > 4:
-			var ccol: Color = GameState.CLASSES[row[4]]["color"]
-			var a0 := _row_pos(row, 0)
-			var a1 := _row_pos(row, ids.size())
-			var band := Rect2(_scr(Vector2(minf(a0.x, a1.x) - 13, a0.y - 12)), Vector2(absf(a1.x - a0.x) + 26, 24) * S)
-			var on := GameState.class_unlocked(row[4])
-			draw_rect(band, Color(ccol.r, ccol.g, ccol.b, 0.13 if on else 0.05))
-			draw_rect(band, Color(ccol.r, ccol.g, ccol.b, 0.45 if on else 0.15), false, 2.0)
-			_hline(_row_pos(row, ids.size() - 1).x, _row_pos(row, ids.size()).x, _row_pos(row, 0).y, ccol if on else LINK_OFF)
-		var first := _row_pos(row, 0)
-		var any := false
-		for id in ids:
-			any = any or _owned({"kind": kind, "id": id})
-		_hline(first.x, TRUNK_X, first.y, ORANGE if any or kind != "skill" else LINK_OFF)
-		for c in range(ids.size() - 1):
-			var a := _owned({"kind": kind, "id": ids[c]})
-			var b := _owned({"kind": kind, "id": ids[c + 1]})
-			var lit := (a and b) if kind == "skill" else a
-			_hline(_row_pos(row, c).x, _row_pos(row, c + 1).x, first.y, ORANGE if lit else LINK_OFF)
-		_dot(Vector2(TRUNK_X, first.y), GOLD)
+	for b in boughs:
+		var s: Vector2 = b["s"]
+		var c: Vector2 = b["c"]
+		var e: Vector2 = b["e"]
+		var ccol := TREE_HI
+		var unlocked := true
+		if b["cls"] != "":
+			ccol = (GameState.CLASSES[b["cls"]]["color"] as Color)
+			unlocked = GameState.class_unlocked(b["cls"])
+		var steps := 28
+		var prev := _scr(s)
+		for k in range(1, steps + 1):
+			var u := float(k) / steps
+			var p := _scr(_bez(s, c, e, u))
+			var w := lerpf(7.0, 3.0, u) * S
+			draw_line(prev + Vector2(S, S), p + Vector2(S, S), TREE_SH, w)
+			draw_line(prev, p, TREE if unlocked else Color("231f3a"), w)
+			prev = p
+		# The lit stretch: from the trunk to the furthest owned node
+		var lit_u := 0.0
+		var ids: Array = b["ids"]
+		for k in ids.size():
+			if _owned({"kind": b["kind"], "id": ids[k]}):
+				lit_u = b["ts"][k]
+		if b["cls"] != "" and unlocked:
+			lit_u = maxf(lit_u, 0.06)
+		if lit_u > 0.0:
+			prev = _scr(s)
+			var col := ccol if b["cls"] != "" else ORANGE
+			for k in range(1, steps + 1):
+				var u := lit_u * float(k) / steps
+				var p := _scr(_bez(s, c, e, u))
+				draw_line(prev, p, col, 1.5 * S)
+				prev = p
+		if b["cls"] != "" and not unlocked:
+			# A chain across a sealed class's bough
+			var mid := _bez(s, c, e, 0.12)
+			for k in 3:
+				var cp := _scr(mid + Vector2(0, -4 + k * 4))
+				draw_rect(Rect2(cp - Vector2(4, 3), Vector2(8, 6)), Color("6a6a74"), false, 2.0)
+
+
+## Thin gold threads from each equipped skill up to its loadout slot.
+func _draw_loadout_links() -> void:
+	if page != "grimoire":
+		return
+	for li in GameState.loadout.size():
+		var id: String = GameState.loadout[li]
+		var ni := node_index("skill", id)
+		var si := _slot_node(li)
+		if ni < 0 or si < 0:
+			continue
+		var a := _scr(nodes[ni]["pos"])
+		var b := _scr(nodes[si]["pos"] + Vector2(0, 10))
+		var col := Color(EQUIP_COL.r, EQUIP_COL.g, EQUIP_COL.b, 0.18 + 0.1 * sin(t * 3.0 + li))
+		draw_line(a, b, col, 2.0)
+
+
+func _frame_for(n: Dictionary, st: String) -> Array:
+	match st:
+		"sealed":
+			return [Color("3a2a34"), Color("140e1a"), Color("1e1624")]
+		"owned", "equipped":
+			var rar: int = GameState.SKILLS[n["id"]]["rarity"]
+			var rc: Color = GameState.RARITY_COLORS[rar]
+			return [rc, Color("2a1626"), rc.darkened(0.45)]
+		"equip":
+			return [Color("ffe08a"), Color("3a1c22"), Color("f29a2e")]
+		"lit":
+			return [Color("f29a2e"), Color("2a1626"), Color("7a2a20")]
+		"avail":
+			return [Color("ff5a3a"), Color("2a1626"), Color("c03a28")]
+	return [Color("5a3a34"), Color("1c1426"), Color("33222a")]
 
 
 func _draw_node(i: int, n: Dictionary) -> void:
@@ -594,25 +730,47 @@ func _draw_node(i: int, n: Dictionary) -> void:
 	var p: Vector2 = n["pos"]
 	if shakes.has(i):
 		p.x += roundf(sin(shakes[i] * 70.0) * 2.0)
-	var fr: Array = FRAMES[st]
 	var hot := i == focus
-	var pulse := 0.5 + 0.5 * sin(t * 6.0)
-	if hot or st == "avail":
-		var gs := sz + 6
-		var glow := UiArt.diamond(gs, fr[0], fr[0], fr[0])
-		var ga := (0.45 if hot else 0.18) * (0.6 + 0.4 * pulse)
-		draw_texture_rect(glow, Rect2(_scr(p - Vector2(gs - 1, gs - 1) * 0.5), Vector2(gs, gs) * S), false, Color(1, 1, 1, ga))
-	var tex := UiArt.diamond(sz, fr[0], fr[1], fr[2])
-	draw_texture_rect(tex, Rect2(_scr(p - Vector2(sz - 1, sz - 1) * 0.5), Vector2(sz, sz) * S), false)
-	var icon_id := _icon_for(n)
+	var pulse := 0.5 + 0.5 * sin(t * 5.0)
+	if n["kind"] == "class":
+		_draw_emblem(n, p, st, hot)
+		return
+	if hot:
+		sz += 4
+	var fr := _frame_for(n, st)
+	# EQUIPPED: a bright breathing ring outside the frame
+	if st == "equipped" or (n["kind"] == "slot" and held != ""):
+		var gs := sz + 8
+		var ring_col := EQUIP_COL if st == "equipped" else GOLD
+		draw_texture_rect(UiArt.diamond(gs, ring_col, ring_col, ring_col), Rect2(_scr(p - Vector2(gs - 1, gs - 1) * 0.5), Vector2(gs, gs) * S), false, Color(1, 1, 1, 0.25 + 0.3 * pulse))
+	elif st == "avail":
+		var gs2 := sz + 6
+		draw_texture_rect(UiArt.diamond(gs2, fr[0], fr[0], fr[0]), Rect2(_scr(p - Vector2(gs2 - 1, gs2 - 1) * 0.5), Vector2(gs2, gs2) * S), false, Color(1, 1, 1, 0.18 * (0.6 + 0.4 * pulse)))
+	draw_texture_rect(UiArt.diamond(sz, fr[0], fr[1], fr[2]), Rect2(_scr(p - Vector2(sz - 1, sz - 1) * 0.5), Vector2(sz, sz) * S), false)
+	var icon_id := ""
+	var mod := Color.WHITE
+	match n["kind"]:
+		"slot":
+			if n["index"] < GameState.loadout.size():
+				icon_id = GameState.loadout[n["index"]]
+		"skill":
+			icon_id = n["id"]
+			if st == "sealed":
+				mod = Color(0.12, 0.1, 0.16, 0.9)   # a dark silhouette: sealed
+		"perk", "eternal":
+			icon_id = n["id"]
+			if st == "dim":
+				mod = Color(0.45, 0.4, 0.5)
+		"rite":
+			icon_id = "chest" if UiArt.has_icon("chest") else "rite"
+	var isz := 12 + (2 if hot else 0)
 	if icon_id != "":
-		var mod := Color(0.5, 0.42, 0.55) if st == "dim" else Color.WHITE
-		draw_texture_rect(UiArt.icon(icon_id), Rect2(_scr(p - Vector2(6, 6)), Vector2(12, 12) * S), false, mod)
-
+		draw_texture_rect(UiArt.icon(icon_id), Rect2(_scr(p - Vector2(isz, isz) * 0.5), Vector2(isz, isz) * S), false, mod)
+	if st == "sealed":
+		_text_c(p + Vector2(0, -4), "?", 16, Color("6a5a6a"))
 	match n["kind"]:
 		"skill":
 			if GameState.owned.has(n["id"]):
-				# Bottom pips: how well the hero knows this skill. Top pips: its rank.
 				var tr := GameState.tier(GameState.get_mastery(n["id"]))
 				for k in 3:
 					var col := Color("3a2228")
@@ -620,18 +778,64 @@ func _draw_node(i: int, n: Dictionary) -> void:
 						col = RED if tr < 3 else RED.lerp(Color("ff8a6a"), pulse)
 					draw_rect(Rect2(_scr(Vector2(p.x - 4 + k * 3, p.y + 12)), Vector2(2, 2) * S), col)
 				_pips_top(p, GameState.rank(n["id"]) - 1, GOLD)
-		"class":
-			if GameState.active_class == n["id"]:
-				draw_texture_rect(UiArt.icon("crown"), Rect2(_scr(Vector2(p.x - 4, p.y - 17)), Vector2(8, 8) * S * 0.75), false)
+			if st == "equipped":
+				# The slot number, in a little gold tab at the top-left
+				var slot := GameState.loadout.find(n["id"]) + 1
+				var tp := _scr(p + Vector2(-12, -12))
+				draw_rect(Rect2(tp, Vector2(18, 18)), EQUIP_COL)
+				draw_rect(Rect2(tp + Vector2(2, 2), Vector2(14, 14)), Color("2a1626"))
+				_str(tp + Vector2(5, 2), str(slot), 16, EQUIP_COL)
+		"slot":
+			_text_c(p + Vector2(0, 11), str(n["index"] + 1), 16, GOLD if n["index"] < GameState.loadout.size() else MUTED)
+			if n["index"] >= GameState.loadout.size():
+				_text_c(p + Vector2(0, -3), "+", 16, MUTED)
 		"eternal":
 			var costs: Array = GameState.ETERNITY[n["id"]]["costs"]
 			var lv := GameState.eternity_level(n["id"])
 			for k in costs.size():
-				var col := CROWN_COL if k < lv else Color("3a2a22")
-				draw_rect(Rect2(_scr(Vector2(p.x - (costs.size() - 1) * 1.5 + k * 3 - 1, p.y + 12)), Vector2(2, 2) * S), col)
+				var col2 := CROWN_COL if k < lv else Color("3a2a22")
+				draw_rect(Rect2(_scr(Vector2(p.x - (costs.size() - 1) * 1.5 + k * 3 - 1, p.y + 12)), Vector2(2, 2) * S), col2)
 		"rite":
-			var label := "RITE · %d" % GameState.pull_cost()
-			_text_c(Vector2(p.x, p.y + 16), label, 16, GOLD if GameState.can_pull() else MUTED)
+			_text_c(Vector2(p.x, p.y + 15), "SUMMONING CHEST · %d" % GameState.pull_cost(), 16, GOLD if GameState.can_pull() else MUTED)
+	if hot:
+		_brackets(p, sz)
+
+
+## SELECTED: four corner brackets that breathe in and out.
+func _brackets(p: Vector2, sz: int) -> void:
+	var r := sz * 0.5 + 3.0 + sin(t * 8.0) * 1.2
+	var col := Color.WHITE
+	for sx in [-1.0, 1.0]:
+		for sy in [-1.0, 1.0]:
+			var c := p + Vector2(sx * r, sy * r)
+			_hline(c.x, c.x - sx * 4.0, c.y, col)
+			_vline(c.x, c.y, c.y - sy * 4.0, col)
+
+
+## A class: a round medallion with its pixel emblem, lit in the class colour when unlocked.
+func _draw_emblem(n: Dictionary, p: Vector2, st: String, hot: bool) -> void:
+	var cid: String = n["id"]
+	var ccol: Color = GameState.CLASSES[cid]["color"]
+	var unlocked := GameState.class_unlocked(cid)
+	var active := GameState.active_class == cid
+	var r := 12.0 + (1.5 if hot else 0.0)
+	var c := _scr(p)
+	if active:
+		draw_circle(c, (r + 4.0 + sin(t * 4.0)) * S, Color(CROWN_COL.r, CROWN_COL.g, CROWN_COL.b, 0.25))
+	draw_circle(c, (r + 1.0) * S, Color("0c0810"))
+	draw_circle(c, r * S, (ccol if unlocked else Color("4a4250")))
+	draw_circle(c, (r - 2.0) * S, Color("1a1226"))
+	var mod := Color.WHITE if unlocked else Color(0.35, 0.32, 0.4)
+	draw_texture_rect(ClassArt.emblem(cid), Rect2(c - Vector2(8, 8) * S * 0.95, Vector2(16, 16) * S * 0.95), false, mod)
+	if active:
+		draw_texture_rect(UiArt.icon("crown"), Rect2(c + Vector2(-12, -r * S - 22), Vector2(24, 24)), false)
+	elif not unlocked:
+		# The price sits on a dark tab across the bottom of the medallion
+		var cost: int = GameState.CLASSES[cid]["cost"]
+		draw_rect(Rect2(_scr(p + Vector2(-8, 4)), Vector2(16, 7) * S), Color(0.05, 0.03, 0.08, 0.9))
+		_text_c(p + Vector2(0, 4), "%d" % cost, 16, CROWN_COL if st == "avail" else MUTED)
+	if hot:
+		_brackets(p, int(r * 2.0))
 
 
 func _pips_top(p: Vector2, count: int, col: Color) -> void:
@@ -643,53 +847,76 @@ func _draw_header() -> void:
 	_text(Vector2(10, 5), "THE THRONE OF THOUGHT", 24, ORANGE)
 	var deaths := GameState.attempt - 1
 	var hero_title: String = GameState.hero_data()["title"]
-	_text(Vector2(10, 16), "%s HAS FALLEN %d TIME%s." % [hero_title, deaths, "" if deaths == 1 else "S"], 16, MUTED)
-	_text(Vector2(10, 23), "POISE NEXT TIME: %d%%" % int(GameState.hero_poise() * 100), 16, Color("c87060"))
-	_text(Vector2(10, 30), "CLASS: %s" % GameState.CLASSES[GameState.active_class]["name"], 16, GOLD)
-
-	# Currencies, top right: Dread (per hero) and Crowns (forever)
+	_text(Vector2(10, 15), "%s HAS FALLEN %d TIME%s." % [hero_title, deaths, "" if deaths == 1 else "S"], 16, MUTED)
+	_text(Vector2(10, 22), "CLASS: %s" % GameState.CLASSES[GameState.active_class]["name"], 16, GOLD)
 	var right := _scr(Vector2(W - 10, 3))
 	_currency(right, "dread", "%d" % int(GameState.dread), "DREAD", Color("8fd8ff"))
 	_currency(right + Vector2(0, 30), "crown", "%d" % GameState.crowns, "CROWNS", CROWN_COL)
-
 	var label := "ENTER  %s ▶" % go_label
 	var lw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
 	var gsize := Vector2(lw + 48, 40)
 	go_rect = Rect2(Vector2(right.x - gsize.x, _scr(Vector2(0, 24)).y), gsize)
 	draw_style_box(UiArt.pill_box(Color("e0503a") if go_hot else RED), go_rect)
 	_str(go_rect.position + Vector2(24, 12), label, 16, Color("fff0d0"))
-
-	# Page tabs
 	tab_rects.clear()
-	var tw := 54.0
+	var tw := 58.0
 	var x0 := TRUNK_X - tw * 1.5
 	for i in PAGES.size():
-		var r := Rect2(_scr(Vector2(x0 + i * tw + 2, 60)), Vector2(tw - 4, 11) * S)
+		var r := Rect2(_scr(Vector2(x0 + i * tw + 2, TAB_Y)), Vector2(tw - 4, 11) * S)
 		tab_rects.append(r)
 		var on: bool = PAGES[i] == page
 		draw_style_box(UiArt.pill_box(Color("c03a28") if on else Color("3a2230")), r)
 		var tl: String = PAGE_TITLES[i]
 		var w := font.get_string_size(tl, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
 		_str(Vector2(roundf(r.get_center().x - w * 0.5), r.position.y + 10), tl, 16, Color("fff0d0") if on else MUTED)
-
-	# Branch labels at the outer end of each row
-	for row in rows:
-		var lbl: String = row[2]
-		if lbl == "":
-			continue
-		var ids: Array = row[3]
-		var outer := _row_pos(row, ids.size() - 1 + (1 if row.size() > 4 else 0))
+	# Bough labels beside each tip
+	for b in boughs:
+		var e: Vector2 = b["e"]
+		var lbl: String = b["label"]
+		var col := MUTED
+		if b["cls"] != "":
+			col = (GameState.CLASSES[b["cls"]]["color"] as Color) if GameState.class_unlocked(b["cls"]) else Color("6a5a6a")
+			if GameState.active_class == b["cls"]:
+				col = GOLD
 		var w := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x / S
-		var col := GOLD if row.size() > 4 and GameState.active_class == row[4] else MUTED
-		if row[0] == "L" and outer.x - 13 - w >= 2:
-			_text(Vector2(outer.x - 13 - w, outer.y - 2), lbl, 16, col)
-		elif row[0] == "R" and outer.x + 13 + w <= W - 2:
-			_text(Vector2(outer.x + 13, outer.y - 2), lbl, 16, col)
+		var off := 17.0 if b["cls"] != "" else 6.0
+		var y := e.y - 19.0 if b["cls"] != "" else e.y - 9.0
+		if b["side"] < 0.0:
+			_text(Vector2(clampf(e.x - w * 0.5, 2.0, W - w - 2.0), y - 2.0), lbl, 16, col)
+		else:
+			_text(Vector2(clampf(e.x - w * 0.5, 2.0, W - w - 2.0), y - 2.0), lbl, 16, col)
 	if page == "eternity":
-		_text_c(Vector2(TRUNK_X, 174), "PERMANENT · BOUGHT WITH CROWNS", 16, CROWN_COL)
+		_text_c(Vector2(TRUNK_X, 180), "PERMANENT · BOUGHT WITH CROWNS", 16, CROWN_COL)
+	elif page == "ascension":
+		_text_c(Vector2(TRUNK_X, 180), "UNTIL DAWN · +%d%% TONIGHT" % int(round((GameState.asc_mult() - 1.0) * 100)), 16, Color("ff8a6a"))
 	var lw2 := font.get_string_size("LOADOUT", HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x / S
-	_text(Vector2(TRUNK_X - GameState.loadout_size() * 13 - 6 - lw2, CROWN_Y - 3), "LOADOUT", 16, MUTED)
-	_text_c(Vector2(TRUNK_X, 231), "Q/E PAGES · ARROWS MOVE · SPACE SELECT · ENTER CONTINUE", 16, MUTED)
+	_text(Vector2(TRUNK_X - GameState.loadout_size() * 13.5 - 8 - lw2, CROWN_Y - 3), "LOADOUT", 16, MUTED)
+	_text_c(Vector2(TRUNK_X, 231), "Q/E PAGES · CLICK OR DRAG A SKILL ONTO A SLOT · 1-5 SLOT · RMB UNEQUIP · ENTER CONTINUE", 16, MUTED)
+
+
+## Bottom-left: what each frame means.
+func _draw_legend() -> void:
+	if page != "grimoire":
+		return
+	var x := 8.0
+	var y := 186.0
+	var rows := [["sealed", "SEALED"], ["owned", "OWNED (RARITY FRAME)"], ["equipped", "EQUIPPED (# = SLOT)"], ["hot", "SELECTED"]]
+	for k in rows.size():
+		var p := Vector2(x + 5, y + k * 11)
+		var key: String = rows[k][0]
+		if key == "hot":
+			draw_texture_rect(UiArt.diamond(9, Color("5a3a34"), Color("1c1426"), Color("33222a")), Rect2(_scr(p - Vector2(4, 4)), Vector2(9, 9) * S), false)
+			_brackets(p, 9)
+		else:
+			var fr: Array
+			if key == "sealed":
+				fr = [Color("3a2a34"), Color("140e1a"), Color("1e1624")]
+			else:
+				fr = [GameState.RARITY_COLORS[1], Color("2a1626"), GameState.RARITY_COLORS[1].darkened(0.45)]
+			if key == "equipped":
+				draw_texture_rect(UiArt.diamond(13, EQUIP_COL, EQUIP_COL, EQUIP_COL), Rect2(_scr(p - Vector2(6, 6)), Vector2(13, 13) * S), false, Color(1, 1, 1, 0.45))
+			draw_texture_rect(UiArt.diamond(9, fr[0], fr[1], fr[2]), Rect2(_scr(p - Vector2(4, 4)), Vector2(9, 9) * S), false)
+		_text(Vector2(x + 14, y + k * 11 - 4), rows[k][1], 16, MUTED)
 
 
 func _currency(right_top: Vector2, icon_id: String, value: String, label: String, col: Color) -> void:
@@ -704,7 +931,8 @@ func _draw_tooltip(n: Dictionary) -> void:
 	var lines := _tooltip_lines(n)
 	if lines.is_empty():
 		return
-	var h := 26.0
+	var portrait: bool = n["kind"] == "class"
+	var h := 26.0 + (100.0 if portrait else 0.0)
 	for l in lines:
 		h += 30.0 if l["s"] == 24 else (14.0 if l.has("bar") else 20.0)
 	var p: Vector2 = n["pos"]
@@ -725,6 +953,14 @@ func _draw_tooltip(n: Dictionary) -> void:
 	x = clampf(x, o.x + 12, o.x + W * S - TIP_W - 12)
 	draw_style_box(UiArt.frame_box(ORANGE, PANEL), Rect2(x, y, TIP_W, h))
 	var cy := y + 14.0
+	if portrait:
+		# The class portrait, big
+		var cid: String = n["id"]
+		var pr := Rect2(x + TIP_W * 0.5 - 48, cy, 96, 96)
+		draw_rect(pr.grow(4), GameState.CLASSES[cid]["color"])
+		draw_rect(pr, Color("1a1226"))
+		draw_texture_rect(ClassArt.emblem(cid), pr, false)
+		cy += 106.0
 	for l in lines:
 		if l.has("bar"):
 			draw_rect(Rect2(x + 22, cy, TIP_W - 44, 8), Color("2a1626"))
@@ -751,10 +987,12 @@ func _tooltip_lines(n: Dictionary) -> Array:
 			if not GameState.owned.has(id):
 				out.append(_ln("SEALED", MUTED, 24))
 				out.append(_ln("??? · %s · %s" % [s["school"], GameState.RARITY_NAMES[rar]], GameState.RARITY_COLORS[rar]))
-				for w in _wrap("A power still in the dark. Perform the Rite of Summoning to call it."):
+				for w in _wrap("A power still in the dark. Open the Summoning Chest at the roots to call it."):
 					out.append(_ln(w, TEXT))
 				return out
-			out.append(_ln(s["name"], GameState.RARITY_COLORS[rar], 24))
+			out.append(_ln(GameState.skill_title(id), GameState.RARITY_COLORS[rar], 24))
+			var eq := GameState.loadout.find(id)
+			out.append(_ln(("EQUIPPED · SLOT %d" % (eq + 1)) if eq >= 0 else "OWNED · NOT EQUIPPED", EQUIP_COL if eq >= 0 else MUTED))
 			out.append(_ln("%s · %s · RANK %d" % [s["school"], GameState.RARITY_NAMES[rar], GameState.rank(id)], MUTED))
 			for w in _wrap(s["desc"]):
 				out.append(_ln(w, TEXT))
@@ -762,11 +1000,8 @@ func _tooltip_lines(n: Dictionary) -> Array:
 			var tr := GameState.tier(m)
 			out.append(_ln("HE KNOWS IT: %s %d%%" % [GameState.TIER_NAMES[tr], int(m * 100)], GameState.TIER_COLORS[tr]))
 			out.append({"bar": m, "c": GameState.TIER_COLORS[tr], "s": 16})
-			var seen := int(GameState.fights_seen(id))
-			var need := int(GameState.fights_to_master())
-			out.append(_ln(("FACED IN %d OF %d FIGHTS TO MASTER" % [seen, need]) if seen < need else "FACED IN %d FIGHTS: HE HAS IT" % seen, MUTED))
 			out.append(_ln("HE WILL %s IT" % s["counter"] if tr >= 2 else "HE CANNOT COUNTER IT YET", GameState.TIER_COLORS[tr] if tr >= 2 else Color("8ad08a")))
-			out.append(_ln("CLICK: %s" % ("UNEQUIP" if GameState.loadout.has(id) else "EQUIP"), GOLD))
+			out.append(_ln("CLICK/DRAG: TO A SLOT · 1-5: SLOT · RMB: UNEQUIP", GOLD))
 		"perk":
 			var p: Dictionary = GameState.PERKS[id]
 			var owned := GameState.perks.has(id)
@@ -781,8 +1016,6 @@ func _tooltip_lines(n: Dictionary) -> Array:
 			else:
 				var ok: bool = GameState.dread >= p["cost"]
 				out.append(_ln("COST: %d DREAD" % p["cost"], GOLD if ok else Color("e05a4a")))
-				if ok:
-					out.append(_ln("CLICK: CLAIM", GOLD))
 		"class":
 			var c: Dictionary = GameState.CLASSES[id]
 			var skills: Array[String] = GameState.class_skills(id)
@@ -800,11 +1033,7 @@ func _tooltip_lines(n: Dictionary) -> Array:
 				out.append(_ln("CLICK: MAKE ACTIVE", GOLD))
 			else:
 				var ok: bool = GameState.crowns >= c["cost"]
-				for w in _wrap("Unlocking adds its skills to the Rite of Summoning."):
-					out.append(_ln(w, MUTED))
 				out.append(_ln("COST: %d CROWNS" % c["cost"], CROWN_COL if ok else Color("e05a4a")))
-				if ok:
-					out.append(_ln("CLICK: UNLOCK", GOLD))
 		"eternal":
 			var e: Dictionary = GameState.ETERNITY[id]
 			var lv := GameState.eternity_level(id)
@@ -817,25 +1046,21 @@ func _tooltip_lines(n: Dictionary) -> Array:
 			if cost < 0:
 				out.append(_ln("✓ FULLY ASCENDED", Color("8ad08a")))
 			else:
-				var ok := GameState.crowns >= cost
-				out.append(_ln("COST: %d CROWNS" % cost, CROWN_COL if ok else Color("e05a4a")))
-				if ok:
-					out.append(_ln("CLICK: ASCEND", GOLD))
+				out.append(_ln("COST: %d CROWNS" % cost, CROWN_COL if GameState.crowns >= cost else Color("e05a4a")))
 		"slot":
 			var i: int = n["index"]
 			out.append(_ln("LOADOUT SLOT %d" % (i + 1), GOLD, 24))
 			if i < GameState.loadout.size():
-				out.append(_ln(GameState.SKILLS[GameState.loadout[i]]["name"], TEXT))
-				out.append(_ln("CLICK: UNEQUIP", MUTED))
+				out.append(_ln(GameState.skill_title(GameState.loadout[i]), TEXT))
+				out.append(_ln("CLICK: PICK UP TO MOVE · RMB: UNEQUIP", MUTED))
 			else:
-				for w in _wrap("Empty. Equip skills from the Grimoire page."):
+				for w in _wrap("Empty. Drag a skill here from the Grimoire, or hover one and press %d." % (i + 1)):
 					out.append(_ln(w, MUTED))
 		"rite":
-			out.append(_ln("RITE OF SUMMONING", GOLD, 24))
-			for w in _wrap("Stop the needle in the GOLD for a legendary, the VIOLET for a rare. Duplicates reforge a skill: +1 rank, and he forgets two fights of it."):
+			out.append(_ln("SUMMONING CHEST", GOLD, 24))
+			for w in _wrap("Open it for a power you do not have yet: 62% COMMON, 30% RARE, 8% LEGENDARY. If that rarity has nothing left for you, you get one from another pool, raised in rank by the difference (a legendary chest gives a RANK II rare or a RANK III common). Owning everything, it reforges your weakest skill."):
 				out.append(_ln(w, TEXT))
-			var ok := GameState.can_pull()
-			out.append(_ln("COST: %d DREAD" % GameState.pull_cost(), GOLD if ok else Color("e05a4a")))
+			out.append(_ln("COST: %d DREAD" % GameState.pull_cost(), GOLD if GameState.can_pull() else Color("e05a4a")))
 	return out
 
 
@@ -860,47 +1085,84 @@ func _wrap(text: String) -> Array[String]:
 	return out
 
 
+## The summoning chest: it rattles, light leaks through the seams (warming toward a rare or
+## legendary colour), the lid bursts open, and the power rises out of it.
 func _draw_rite() -> void:
-	draw_rect(Rect2(Vector2.ZERO, size), Color(0.02, 0.0, 0.04, 0.72))
-	var panel := Rect2(_scr(Vector2(98, 60)), Vector2(230, 120) * S)
-	draw_style_box(UiArt.frame_box(ORANGE, PANEL), panel)
-	_text_c(Vector2(TRUNK_X, 70), "RITE OF SUMMONING", 24, ORANGE)
-	if rite == "spin":
-		var zones: Array = GameState.rite_zones()
-		_text_c(Vector2(TRUNK_X, 86), "SEAL THE NEEDLE IN THE DARK", 16, MUTED)
-		var bx := 123.0
-		var bw := 180.0
-		var by := 102.0
-		draw_rect(Rect2(_scr(Vector2(bx - 1, by - 1)), Vector2(bw + 2, 14) * S), Color("12060a"))
-		draw_rect(Rect2(_scr(Vector2(bx, by)), Vector2(bw, 12) * S), Color("2a1f38"))
-		draw_rect(Rect2(_scr(Vector2(bx + bw * (0.5 - zones[1]), by)), Vector2(bw * zones[1] * 2.0, 12) * S), Color("6a34a8"))
-		draw_rect(Rect2(_scr(Vector2(bx + bw * (0.5 - zones[0]), by)), Vector2(bw * zones[0] * 2.0, 12) * S), Color("f2c040"))
-		var nx := roundf(bx + needle * bw)
-		draw_rect(Rect2(_scr(Vector2(nx - 1, by - 4)), Vector2(2, 20) * S), Color.WHITE)
-		_text_c(Vector2(TRUNK_X, 124), "SPACE / CLICK: SEAL", 16, GOLD)
-		_text_c(Vector2(TRUNK_X, 136), "GOLD = LEGENDARY   VIOLET = RARE", 16, MUTED)
-		_text_c(Vector2(TRUNK_X, 160), "ESC: LEAVE THE RITE", 16, MUTED)
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.02, 0.0, 0.04, 0.78))
+	var r: int = reveal.get("rarity", 0)
+	var rc: Color = GameState.RARITY_COLORS[r]
+	var cx := float(TRUNK_X)
+	var cy := 128.0
+	_text_c(Vector2(cx, 58), "SUMMONING CHEST", 24, ORANGE)
+	var leak := Color(1, 1, 1)
+	var shake := 0.0
+	var lid_up := 0.0
+	if rite == "shake":
+		var k := minf(1.0, rite_t / 1.4)
+		shake = sin(rite_t * (30.0 + 40.0 * k)) * (1.0 + 2.5 * k)
+		if r >= 1 and rite_t > 0.6:
+			leak = GameState.RARITY_COLORS[1]
+		if r >= 2 and rite_t > 1.0:
+			leak = GameState.RARITY_COLORS[2]
+		leak.a = 0.4 + 0.6 * k
+	elif rite == "open":
+		lid_up = minf(1.0, rite_t / 0.3)
+		leak = rc
+	else:
+		lid_up = 1.0
+		leak = rc
+	# Rays once it is open
+	if rite != "shake":
+		var c := _scr(Vector2(cx, cy - 10))
+		for k in 16:
+			var a := t * 0.6 + k * TAU / 16.0
+			draw_line(c, c + Vector2(cos(a), sin(a)) * 220.0, Color(rc.r, rc.g, rc.b, 0.16), 8.0)
+	var bx := cx - 22 + shake
+	# Body
+	var wood := Color("6a3e1e")
+	var band := Color("c8962a") if r < 2 else Color("ffd27a")
+	draw_rect(Rect2(_scr(Vector2(bx, cy - 6)), Vector2(44, 24) * S), Color("2a160a"))
+	draw_rect(Rect2(_scr(Vector2(bx + 1, cy - 5)), Vector2(42, 22) * S), wood)
+	for k in 3:
+		draw_rect(Rect2(_scr(Vector2(bx + 1, cy - 1 + k * 7)), Vector2(42, 1) * S), wood.darkened(0.3))
+	for xx in [bx + 3, bx + 38]:
+		draw_rect(Rect2(_scr(Vector2(xx, cy - 5)), Vector2(3, 22) * S), band)
+	# Light from the seam
+	draw_rect(Rect2(_scr(Vector2(bx + 1, cy - 7)), Vector2(42, 2) * S), leak)
+	# Lid (lifts and tilts back)
+	var ly := cy - 16 - lid_up * 14.0
+	var lid := Rect2(_scr(Vector2(bx, ly)), Vector2(44, 10) * S)
+	draw_rect(lid, Color("2a160a"))
+	draw_rect(lid.grow(-S), wood.lightened(0.08))
+	for xx in [bx + 3, bx + 38]:
+		draw_rect(Rect2(_scr(Vector2(xx, ly + 1)), Vector2(3, 8) * S), band)
+	draw_rect(Rect2(_scr(Vector2(bx + 19, ly + 6)), Vector2(6, 6) * S), band)  # the lock
+	if rite == "shake":
+		_text_c(Vector2(cx, cy + 26), "...", 24, MUTED)
 		return
-	var rar: int = reveal.get("rarity", 0)
-	var rc: Color = GameState.RARITY_COLORS[rar]
+	# The power rises out of the chest
+	var rt: float = reveal.get("t", 0.0) if rite == "reveal" else 0.0
+	var rise := minf(1.0, rt / 0.35)
+	var ip := Vector2(cx, cy - 18 - 22 * rise)
+	var dsz := 31
+	draw_texture_rect(UiArt.diamond(dsz, rc, Color("2a1626"), rc.darkened(0.4)), Rect2(_scr(ip - Vector2(dsz - 1, dsz - 1) * 0.5), Vector2(dsz, dsz) * S), false)
+	draw_texture_rect(UiArt.icon(reveal.get("id", "fireball")), Rect2(_scr(ip - Vector2(10, 10)), Vector2(20, 20) * S), false)
+	if rite != "reveal":
+		return
 	var s: Dictionary = GameState.SKILLS[reveal.get("id", "fireball")]
-	var c := _scr(Vector2(TRUNK_X, 106))
-	var rt: float = reveal.get("t", 0.0)
-	for k in 14:
-		var a := rt * 0.7 + k * TAU / 14.0
-		var ray_len := 150.0 * minf(1.0, rt * 3.0)
-		draw_line(c, c + Vector2(cos(a), sin(a)) * ray_len, Color(rc.r, rc.g, rc.b, 0.18), 6.0)
-	var dsz := 37
-	draw_texture_rect(UiArt.diamond(dsz, rc, Color("2a1626"), rc.darkened(0.4)), Rect2(_scr(Vector2(TRUNK_X, 106) - Vector2(dsz - 1, dsz - 1) * 0.5), Vector2(dsz, dsz) * S), false)
-	draw_texture_rect(UiArt.icon(reveal.get("id", "fireball")), Rect2(_scr(Vector2(TRUNK_X - 12, 94)), Vector2(24, 24) * S), false)
-	_text_c(Vector2(TRUNK_X, 128), GameState.RARITY_NAMES[rar], 16, rc)
-	_text_c(Vector2(TRUNK_X, 136), s["name"], 24, TEXT)
-	var sub := "NEW POWER · ADDED TO YOUR GRIMOIRE"
-	if reveal.get("dup", false):
-		sub = "REFORGED TO RANK %d · HE FORGETS" % reveal.get("rank", 1)
-	_text_c(Vector2(TRUNK_X, 148), sub, 16, GOLD)
-	var again := "SPACE: AGAIN (%d)   " % GameState.pull_cost() if GameState.can_pull() else ""
-	_text_c(Vector2(TRUNK_X, 164), again + "ESC/CLICK: RETURN", 16, MUTED)
+	var ir: int = reveal.get("item_rarity", r)
+	_text_c(Vector2(cx, cy + 22), "%s CHEST" % GameState.RARITY_NAMES[r], 16, rc)
+	_text_c(Vector2(cx, cy + 30), "%s %s" % [str(s["name"]).to_upper(), GameState.roman(reveal.get("rank", 1))], 24, GameState.RARITY_COLORS[ir])
+	var sub := "NEW POWER · RANK %s" % GameState.roman(reveal.get("rank", 1))
+	if reveal.get("maxed", false):
+		sub = "EVERY POWER IS MASTERED · +%d CROWNS" % (5 + 5 * r)
+	elif reveal.get("dup", false):
+		sub = "REFORGED TO RANK %s · HE FORGETS" % GameState.roman(reveal.get("rank", 1))
+	elif ir != r:
+		sub = "THE %s POOL RAN DRY: A %s, RANK %s" % [GameState.RARITY_NAMES[r], GameState.RARITY_NAMES[ir], GameState.roman(reveal.get("rank", 1))]
+	_text_c(Vector2(cx, cy + 42), sub, 16, GOLD)
+	var again := "SPACE: OPEN ANOTHER (%d)   " % GameState.pull_cost() if GameState.can_pull() else ""
+	_text_c(Vector2(cx, cy + 56), again + "ESC/CLICK: RETURN", 16, MUTED)
 
 
 # --- Text helpers (positions are the TOP-LEFT of the text) --------------------
@@ -923,7 +1185,7 @@ func _text_c(art_center_top: Vector2, text: String, fsize: int, col: Color) -> v
 
 
 # =============================================================================
-# Backdrop: the tree itself, painted once into a 426x240 image
+# Backdrop: the trunk, canopy and roots, painted once into a 426x240 image
 # =============================================================================
 
 func _make_backdrop() -> ImageTexture:
@@ -931,21 +1193,16 @@ func _make_backdrop() -> ImageTexture:
 	img.fill(BG)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 7
-	for i in 110:
+	for i in 140:
 		img.set_pixel(rng.randi_range(0, W - 1), rng.randi_range(0, H - 1), BG.lightened(0.15))
 	var canopy := Color("221d3e")
-	for i in 44:
-		_disc(img, rng.randi_range(34, W - 34), rng.randi_range(40, 172), rng.randi_range(5, 14), canopy)
+	for i in 60:
+		_disc(img, rng.randi_range(20, W - 20), rng.randi_range(46, 178), rng.randi_range(6, 16), canopy)
 	for e in [Vector2(118, 238), Vector2(308, 238), Vector2(165, 240), Vector2(261, 240), Vector2(78, 232), Vector2(348, 232)]:
-		_branch(img, Vector2(TRUNK_X, 204), Vector2((TRUNK_X + e.x) * 0.5, 214), e, 4.0, 1.0)
-	_branch(img, Vector2(TRUNK_X, 239), Vector2(TRUNK_X - 12, 150), Vector2(TRUNK_X, 36), 9.0, 3.0)
-	for y in ROW_Y:
-		_branch(img, Vector2(TRUNK_X, y + 15), Vector2(150, y + 18), Vector2(34, y - 10), 4.0, 1.0)
-		_branch(img, Vector2(TRUNK_X, y + 15), Vector2(276, y + 18), Vector2(392, y - 10), 4.0, 1.0)
-	_branch(img, Vector2(TRUNK_X, 72), Vector2(178, 62), Vector2(146, 36), 3.0, 1.0)
-	_branch(img, Vector2(TRUNK_X, 72), Vector2(248, 62), Vector2(280, 36), 3.0, 1.0)
-	_band(img, 31, 128, W - 128)
-	_band(img, 222, 56, W - 56)
+		_branch(img, Vector2(TRUNK_X, 212), Vector2((TRUNK_X + e.x) * 0.5, 220), e, 4.0, 1.0)
+	_branch(img, Vector2(TRUNK_X, 239), Vector2(TRUNK_X - 10, 150), Vector2(TRUNK_X, 50), 10.0, 3.0)
+	_band(img, 28, 150, W - 150)
+	_band(img, 224, 56, W - 56)
 	return ImageTexture.create_from_image(img)
 
 
@@ -975,33 +1232,15 @@ func _branch(img: Image, a: Vector2, c: Vector2, b: Vector2, r0: float, r1: floa
 				_disc(img, p.x - r * 0.45, p.y - 0.5, r * 0.3, TREE_HI)
 
 
-## A red ornamental band: a rule line with alternating scrolls above and below, and a medallion.
 func _band(img: Image, y: int, x0: int, x1: int) -> void:
 	var red := Color("b8342a")
 	var dark := Color("6a1c1a")
 	for x in range(x0, x1 + 1):
 		img.set_pixel(x, y, red)
 		img.set_pixel(x, y + 1, dark)
-	var scroll := ["..rrr..", ".r...r.", "r..r..r", "r.r.rr.", ".r....."]
-	var x := x0 + 4
-	var k := 0
-	while x < x1 - 8:
-		var flip := k % 2 == 1
-		var above := k % 4 < 2
-		for yy in scroll.size():
-			var row: String = scroll[yy]
-			for xx in row.length():
-				if row[xx] != "r":
-					continue
-				var px := x + (row.length() - 1 - xx if flip else xx)
-				var py := (y - 1 - (scroll.size() - 1 - yy)) if above else (y + 2 + (scroll.size() - 1 - yy))
-				if px >= 0 and px < W and py >= 0 and py < H:
-					img.set_pixel(px, py, red)
-		x += 8
-		k += 1
 	var mx := (x0 + x1) / 2
-	for dy in range(-4, 5):
-		for dx in range(-4, 5):
+	for dy in range(-3, 4):
+		for dx in range(-3, 4):
 			var d := absi(dx) + absi(dy)
-			if d <= 4:
-				img.set_pixel(mx + dx, y + dy, Color("f29a2e") if d >= 3 else (red if d >= 2 else Color("ffd27a")))
+			if d <= 3:
+				img.set_pixel(mx + dx, y + dy, Color("f29a2e") if d >= 2 else Color("ffd27a"))

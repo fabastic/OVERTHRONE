@@ -10,10 +10,15 @@ var target := Vector3(0, 2.3, 0.4)
 var speed := 11.0
 var done := false
 var arrived := false
+var color := Color(1.0, 0.85, 0.4)
+var returned := false   # one of YOUR attacks, parried back at you
 
 
 func _ready() -> void:
-	var gold := Color(1.0, 0.85, 0.4)
+	var gold := color
+	if returned:
+		speed = 13.0
+		add_child(Fx.sphere(0.42, Fx.mat(Color.WHITE, 2.0, 0.25)))
 	add_child(Fx.sphere(0.18, Fx.mat(gold, 8.0)))
 	add_child(Fx.sphere(0.32, Fx.mat(gold, 3.0, 0.35)))
 	var light := OmniLight3D.new()
@@ -46,5 +51,5 @@ func resolve() -> void:
 	if done:
 		return
 	done = true
-	game.on_hero_struck_ranged(damage, target)
+	game.on_hero_struck_ranged(damage, target, returned)
 	queue_free()

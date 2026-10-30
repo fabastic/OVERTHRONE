@@ -14,6 +14,7 @@ signal struck_boss(damage: float)
 
 const Fx := preload("res://scripts/fx.gd")
 const PixTex := preload("res://scripts/pixtex.gd")
+const Vox := preload("res://scripts/vox.gd")
 const STRIKE_POINT := Vector3(0, 0, -2.15)
 const BOUND_X := 6.5
 const BOUND_Z_MIN := -14.0
@@ -75,9 +76,12 @@ var recover_ticks := 3
 var strafe_len := 4
 var strafe_dir := 1.0
 var dodge_cd := 0
-var roll_t := 0.0
+var roll_t := 0.0          # a dodge in progress (seconds left)
 var roll_dur := 0.3
 var roll_side := 1.0
+var dodge_anim := "side"   # "side" (sidestep, low and wide), "duck" (under it), "back" (hop back)
+var hero_parry_cd := 0     # ticks until he can parry again
+var parry_flash := 0.0
 var weave_amt := 0.0
 var countdown: Label3D
 var leap_landed := false
@@ -135,6 +139,7 @@ var torch: OmniLight3D
 var flame: MeshInstance3D
 var sigils: Node3D
 var body_mats: Array[StandardMaterial3D] = []
+var vox_meshes: Array = []   # the voxel body (Blender), when it exists
 
 
 func _ready() -> void:
@@ -249,6 +254,21 @@ func _build() -> void:
 	var l := _build_arm(-1.0, armor, armor_hi, dark, leather)
 	arm_l = l[0]
 	elbow_l = l[1]
+	# The voxel body made in Blender: one model per challenger, and the Stranger by corruption.
+	var model := "hero_%d" % clampi(tier, 1, 6)
+	if form == 4:
+		model = "stranger_%d" % clampi(roundi(GameState.stranger_corruption() * 2.0), 0, 2)
+	vox_meshes = Vox.voxify(model, {"leg_l": leg_l, "leg_r": leg_r, "torso": torso, "head": head,
+		"arm_l": arm_l, "arm_r": arm_r, "fore_l": elbow_l, "fore_r": elbow_r}, [halo])
+	if form == 4 and not vox_meshes.is_empty():
+		var parts := Vox.parts(model)
+		if parts.has("hood"):
+			for c in head.get_children():
+				if c is MeshInstance3D and c != halo:
+					head.remove_child(c)
+					c.queue_free()
+			head.add_child(parts["hood"])
+			vox_meshes.append(parts["hood"])
 	_build_sword(gold, leather)
 	_build_shield(armor, armor_hi, cloth, gold)
 
@@ -621,6 +641,8 @@ func take_hit(dmg: float, skill_id: String) -> bool:
 	if skill_id != "" and skill_id == nullify_skill:
 		game.popup_text(center() + Vector3(0, 0.9, 0), "NULLIFIED", Color(0.8, 0.3, 1.0), 1.1)
 		return false
+	if _try_parry(dmg, skill_id):
+		return false
 	hp -= dmg
 	took_damage = true
 	invuln_t = 0.12
@@ -641,6 +663,48 @@ func take_hit(dmg: float, skill_id: String) -> bool:
 		action_t = 0.18
 		action_vel = Vector3(position.x, 0, position.z).normalized() * 5.0
 	return true
+
+
+## He parries too. The better he knows the attack, the likelier: a clean block, sparks, and your
+## attack comes straight back at your face as a bolt for 150% of its damage (parry or lean out of it).
+## One parry every 10 ticks at most.
+func _try_parry(dmg: float, skill_id: String) -> bool:
+	if hero_parry_cd > 0 or stun_t > 0.0 or root_t > 0.0 or is_airborne() or game == null:
+		return false
+	if state in ["windup", "leap", "lunge", "descend", "enter", "victory"]:
+		return false
+	var m := GameState.get_mastery(skill_id)
+	var chance := 0.06 + m * 0.4 + 0.03 * (GameState.attempt - 1) + 0.03 * (GameState.level - 1)
+	if stranger:
+		chance += 0.15
+	if randf() >= clampf(chance, 0.0, 0.55):
+		return false
+	hero_parry_cd = 10
+	parry_t = 0.35
+	parry_flash = 0.35
+	announce("PARRIED")
+	game.on_hero_parry(self, dmg * 1.5, skill_id)
+	return true
+
+
+## Your blade in the arena: once he has studied it, he slips it.
+func try_evade_blade() -> bool:
+	if dead or stun_t > 0.0 or root_t > 0.0 or is_airborne():
+		return false
+	if randf() >= GameState.get_mastery("blade") * 0.75:
+		return false
+	var away := Vector3(position.x - game.boss_x(), 0, position.z + 1.2).normalized()
+	dash(away, 2.4, 0.28)
+	_start_dodge("back", 1.0)
+	announce("SLIPPED")
+	return true
+
+
+func _start_dodge(kind: String, side: float) -> void:
+	dodge_anim = kind
+	roll_t = 0.32
+	roll_dur = 0.32
+	roll_side = side
 
 
 func _die() -> void:
@@ -830,6 +894,7 @@ func on_tick() -> void:
 		return
 	state_ticks += 1
 	dodge_cd = maxi(0, dodge_cd - 1)
+	hero_parry_cd = maxi(0, hero_parry_cd - 1)
 	lunge_cd -= 1
 	bolt_cd -= 1
 	leap_cd -= 1
@@ -989,10 +1054,9 @@ func _try_evade() -> void:
 				announce("BLINK")
 			else:
 				dash(side, 2.6, 0.3)
-				roll_t = 0.3
-				roll_dur = 0.3
-				roll_side = signf(side.x) if absf(side.x) > 0.1 else 1.0
-				announce("ROLL" if randf() < 0.5 else "DODGE")
+				var kind := "duck" if ("dir" in a and randf() < 0.35) else "side"
+				_start_dodge(kind, signf(side.x) if absf(side.x) > 0.1 else 1.0)
+				announce("DUCK" if kind == "duck" else "SIDESTEP")
 		return
 
 
@@ -1052,7 +1116,9 @@ func _move(delta: float) -> Vector3:
 # --- Animation ----------------------------------------------------------------
 
 func _animate(delta: float, vel: Vector3) -> void:
-	rotation.y = atan2(position.x, position.z)
+	var face := atan2(position.x - (game.boss_x() if game and not figurine else 0.0), position.z)
+	rotation.y = lerp_angle(rotation.y, face, 1.0 - exp(-delta * 10.0))
+	parry_flash = maxf(0.0, parry_flash - delta)
 	var spd := Vector2(vel.x, vel.z).length()
 	var moving := spd > 0.3 and action == ""
 	var k := 1.0 - exp(-delta * 16.0)
@@ -1066,12 +1132,33 @@ func _animate(delta: float, vel: Vector3) -> void:
 
 	var squash := action == "dash" and roll_t <= 0.0
 	rig.scale = rig.scale.lerp(Vector3(1.15, 0.8, 1.15) if squash else Vector3.ONE, 1.0 - exp(-delta * 20.0))
-	# Roll: a full tumble sideways. Weave: the torso sways and dips.
+	# Dodges: a low, wide SIDESTEP that leans away; a DUCK under a projectile; a HOP back.
+	# Weave: the torso sways and dips.
+	var lean_z := 0.0
+	var dip := 0.0
+	var splay := 0.0
+	var back := 0.0
 	if roll_t > 0.0:
-		rig.rotation.z = -roll_side * TAU * (1.0 - roll_t / roll_dur)
-		rig.position.y = 0.35 * sin(PI * (1.0 - roll_t / roll_dur))
-	else:
-		rig.rotation.z = lerpf(rig.rotation.z, 0.0, 1.0 - exp(-delta * 20.0))
+		var s := sin(PI * (1.0 - roll_t / roll_dur))
+		match dodge_anim:
+			"duck":
+				dip = 0.42 * s
+				back = -0.35 * s
+			"back":
+				dip = -0.18 * s
+				back = 0.3 * s
+			_:
+				lean_z = -roll_side * 0.45 * s
+				dip = 0.2 * s
+				splay = 0.5 * s
+	rig.rotation.z = lerpf(rig.rotation.z, lean_z, 1.0 - exp(-delta * 25.0))
+	if roll_t > 0.0:
+		rig.position.y = -dip
+	leg_l.rotation.z = lerpf(leg_l.rotation.z, -splay, k)
+	leg_r.rotation.z = lerpf(leg_r.rotation.z, splay, k)
+	if dip > 0.25:
+		leg_l.rotation.x = lerpf(leg_l.rotation.x, -1.0, k)
+		leg_r.rotation.x = lerpf(leg_r.rotation.x, 0.6, k)
 	torso.rotation.z = sin(t * 6.5 + phase) * 0.32 * weave_amt
 	head.rotation.z = -torso.rotation.z * 0.5
 	if state == "strafe":
@@ -1119,6 +1206,10 @@ func _animate(delta: float, vel: Vector3) -> void:
 		pose[0] = sin(t * 18.0) * 0.08
 		pose[1] = 0.8 + sin(t * 20.0) * 0.3
 		pose[4] = 0.8 - sin(t * 20.0) * 0.3
+	if parry_flash > 0.0:
+		# His parry: blade snapped across his body, shield punched forward.
+		pose = [0.05, 1.6, 1.3, -0.9, 1.5, 0.3]
+	pose[0] += back
 	var arm_k := 1.0 - exp(-delta * (30.0 if striking else 18.0))
 	torso.rotation.x = lerpf(torso.rotation.x, pose[0], k)
 	arm_r.rotation.x = lerp_angle(arm_r.rotation.x, pose[1], arm_k)
@@ -1153,6 +1244,8 @@ func _animate(delta: float, vel: Vector3) -> void:
 	var flash_e := 3.0 if flash_t > 0.0 else 0.0
 	for m in body_mats:
 		m.emission_energy_multiplier = flash_e
+	if not vox_meshes.is_empty():
+		Vox.set_flash(vox_meshes, flash_t > 0.0)
 	if torch_lit:
 		torch.light_energy = 2.2 + randf() * 0.6
 	sigils.rotation.y += delta * (6.0 if state == "victory" else 1.5)

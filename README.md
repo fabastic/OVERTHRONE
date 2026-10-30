@@ -18,17 +18,25 @@ As your hands purify, the city's fear turns to wariness, then to reverence. And 
 
 ## Controls
 
+Every control can be rebound: **ESC → SETTINGS → CONTROLS** (keys or mouse buttons). The defaults:
+
 **By day (Vael):**
 
 | Input | Action |
 |---|---|
-| WASD / arrows, SHIFT | Walk, run |
+| WASD / arrows | Walk |
+| SHIFT | Sprint (uses stamina) |
+| SPACE | Jump. Hold it against a low ledge (crates, stalls, the fountain rim, low walls) to climb up |
+| CTRL | Crouch; while sprinting, slide |
+| C | Dodge roll (stamina): a roll through a foe's blow takes no damage |
 | Mouse | Look |
-| LMB | Swing your blade (on the beat: one swing every few ticks, set by the weapon) |
+| LMB | Swing your blade. Each blade has its own swing and speed |
 | Q | Cast the selected skill |
-| RMB | Parry. Foes show a red tick countdown over their heads; parry on the last beat |
+| RMB | Parry. Foes show a red tick countdown; parry on the last beat |
 | E | Talk, open a chest, examine a secret, pick up a page, look in the mirror |
-| M / TAB | The map of Vael (the world holds still while you read it) |
+| I | Inventory: your blades (equip, upgrade with Crowns) |
+| M / TAB | The map of Vael |
+| T | The Throne of Thought (skills and loadout) |
 | 1-5 / mouse wheel | Select skill |
 
 **At night (the arena):**
@@ -37,21 +45,68 @@ As your hands purify, the city's fear turns to wariness, then to reverence. And 
 |---|---|
 | Mouse | Aim (you're seated, so look is clamped) |
 | LMB | Cast the selected skill |
-| RMB | **Parry**: raise your guard as his blade (or holy bolt) lands. You take 15% |
-| A/D or ←/→ | **Lean** along the dais. Shift away mid-swing and his blow only grazes you (30%). Bolts too |
+| F | Swing your blade: the tyrant's sword appears for one vast cut across the dais |
+| RMB | **Parry**. It opens on the tick after you press it, for ONE tick (two with enough window bonuses), then needs 7 ticks to recover. Press it while his countdown reads 1 |
+| A/D or ←/→ | **Lean** along the dais. Lean far enough, early enough, and his blow only grazes you (30%). He tracks a habitual leaner |
 | 1-5 / mouse wheel | Select skill |
-| ESC | Pause |
-| F2 | Cycle pixel size |
+
+**Anywhere:** ESC opens the pause menu (RESUME, SETTINGS, INVENTORY by day, HOW TO PLAY, RESTART, QUIT). F2 cycles the pixel size.
 
 **On the board:** SPACE or click advances the King one tile. T opens the Throne of Thought.
 
 **On the Throne screen:**
 - Q/E or TAB switch pages.
-- Arrows/WASD move, SPACE or click selects.
-- ENTER continues.
-- ESC leaves the Rite.
+- Click or drag a skill onto a loadout slot, or hover a skill and press 1-5.
+- Right-click unequips. Arrows move, SPACE selects, ENTER continues.
 
 In any dialogue or card, **1-9** pick a choice and **ENTER** presses the first button.
+
+## Settings
+
+ESC → SETTINGS:
+- **CONTROLS:** rebind every action. The city and the fight have separate actions (e.g. city swing on LMB, fight cast on LMB), so the same key can mean the right thing in each.
+- **MOUSE & SOUND:** sensitivity, invert Y, master volume.
+- **VIDEO:** fullscreen, pixel size (sharp / classic / chunky), the tick beat.
+
+Settings are saved to `user://settings.cfg`.
+
+## Blades: the inventory
+
+Every blade you buy at Hennik's forge, find in a chest or uncover in a secret goes into your **inventory** (I). The blades are the Rusted Shortsword, the Borrowed Sword, the Watch Falchion, the Runed Longsword, the Cog-Axe, the Wardensteel Greatsword, the Arcbrand, the Lionfang Sabre, the Phase Halberd and the Sunforged Edge. Each has its own swing:
+- quick forehand and backhand slashes
+- your father's diagonal cut
+- a backhand flick
+- an overhead cleave
+- a wound-up chop
+- a wide sweep that rolls the camera
+- a double thrust
+- a twirl into a rising cut
+- a lunge into a sweep
+- a rising plasma arc
+
+Every swing leaves a glowing trail off the tip and has its own sound (light, heavy, arcing, plasma).
+
+**Upgrades** cost Crowns and reshape the model:
+- **I ETCHED:** a glowing rune channel down the blade and a pommel gem
+- **II AWAKENED:** burning edges, a winged guard, a ring of aether around the hilt
+- **III ASCENDED:** orbiting shards and an aura of motes
+
+Each level adds +20% damage. Liore's aether tuning (Dread) is the same upgrade paid another way. Your blade's tier also adds +5% per tier to your spells at night.
+
+**In the arena** (F) the blade only reaches him when he is close. He learns it like a skill: once he knows it he slips it, and he can parry it back at you.
+
+## He parries too
+
+The hero parries your attacks. The better he knows a skill (and the more he has died), the likelier he is to parry it, up to 55%, and at most once every 10 ticks. A parried attack comes **straight back at your face as a bolt for 150% of its damage**, in the attack's colour. Parry it on the beat it lands, or lean out of its path.
+
+He also reads you in other ways:
+- He rolls and sidesteps your projectiles and ducks under them.
+- He weaves on the approach and circles you at range.
+- He backsteps when hurt.
+- He feints if you parry a lot.
+- He tracks your lean if you lean a lot.
+
+His dodges are a low, wide sidestep, a duck, or a hop back, never a flip. He turns smoothly to face you as you lean.
 
 ## New-player guidance
 
@@ -157,7 +212,19 @@ Each chapter of the board now has a **SKIRMISH** tile before its challenger: a S
 
 ## Look
 
-Everything but your hands is pixel art in the spirit of a pixel dungeon crawler: chunky stone bricks with dark mortar, cobbles, plank doors, shingle roofs, plaster and timber, pixel grass, bark and leaves, water and sand, all mapped in world space so every texel is the same size. People are built with big block heads and painted pixel faces (beards, stubble, goggles, veils, bandanas, porcelain masks) and dress for their trade. The arena is a pixel dungeon hall. The UI wears the King's state and stays out of the way. At first it is corrupted: black-violet panels with blood-red, thorned borders and red cracks glowing in them, a dark slip for anything you read, a blackened heart with a thorn through it. With every memory it lightens, through iron and bronze, until it is warm, translucent and gold-edged with gems of light at the corners, the text inked on parchment and the heart bright. The day HUD is just a purse and clock, a compass, two tracker lines, a slim Will bar over the skill slots, a hair-thin swing meter under the crosshair, and a small minimap; everything else (secrets, pages, boons, your blade) is on the map (M). The board is a candlelit map in the Inscryption manner, crowded with little cone forests in each region's colours and inked with dashed trails, with the Stranger seated across the table.
+**Bits and pixels.** People, heroes, foes, the Stranger, trees, rocks, bushes, barrels and crates are **voxel models made in Blender** (`tools/voxel_models.py`) in the chunky Barony style:
+- 1/16 m voxels, each a single texel of a pixel palette, with emissive eyes, visors and aether cores.
+- Each body part is its own piece with its pivot at the joint, so the game's procedural animation drives them.
+- 50 models: 11 townsfolk with names and 8 citizens; the six challengers; the Stranger in white, grey and black; 10 foes and day bosses; 3 oaks, 2 pines (one snow-dusted), 3 mossy rocks, a bush, a barrel, a crate and a lamp.
+
+**Depth.** Every pixel texture gets a normal map baked from its own pixels, so mortar, cobble gaps, shingles and planks catch the light. On top of that:
+- Ambient occlusion fills every corner.
+- Distance fog takes on the sky's colour (aerial perspective), and a mist pools low in the morning and evening.
+- A ring of stepped mountains sits on the horizon, and pixel clouds drift overhead.
+
+**Water has depth.** The island is built of 2 m voxel columns. Wherever the map is wet, the seabed steps down with distance from the shore. One water surface lies over it, and a shader colours it by how deep the water really is behind it: turquoise over the shallows, with the bed visible and wobbling through it, and ink-blue in the deeps. A flickering pixel foam ring follows every shore, and the waves and glints are snapped to the pixel grid. You can **wade** into the shallows (you sink in, slow down and splash); deep water is a wall.
+
+The rest is pixel art as before: in the spirit of a pixel dungeon crawler: chunky stone bricks with dark mortar, cobbles, plank doors, shingle roofs, plaster and timber, pixel grass, bark and leaves, water and sand, all mapped in world space so every texel is the same size. People are built with big block heads and painted pixel faces (beards, stubble, goggles, veils, bandanas, porcelain masks) and dress for their trade. The arena is a pixel dungeon hall. The UI wears the King's state and stays out of the way. At first it is corrupted: black-violet panels with blood-red, thorned borders and red cracks glowing in them, a dark slip for anything you read, a blackened heart with a thorn through it. With every memory it lightens, through iron and bronze, until it is warm, translucent and gold-edged with gems of light at the corners, the text inked on parchment and the heart bright. The day HUD is just a purse and clock, a compass, two tracker lines, a slim Will bar over the skill slots, a hair-thin swing meter under the crosshair, and a small minimap; everything else (secrets, pages, boons, your blade) is on the map (M). The board is a candlelit map in the Inscryption manner, crowded with little cone forests in each region's colours and inked with dashed trails, with the Stranger seated across the table.
 
 ## The Stranger and the last night
 
@@ -190,9 +257,23 @@ Borrowed Sword (+10% damage) · Broken Oath-Ring (parry window +0.06s) · Champi
 
 ## The Throne of Thought (Tree of Life)
 
-- **Crown:** your loadout (4 slots, 5 with Fifth Finger).
-- **Roots:** the Rite of Summoning (gacha). Stop the needle: gold = legendary, violet = rare. Duplicates reforge a skill: +1 rank, and he forgets two fights of it.
-- **GRIMOIRE page:** one bough per class, skills inward and the class sigil at the tip. Sealed "?" nodes are ones you haven't summoned. Red pips show how well he knows a skill, gold pips its rank.
+A real tree: **each class is a curved bough** off the trunk, its skills along the bough and a **pixel-art emblem** at the tip. The emblems are a flame-wreathed skull, a crowned skull over crossed bones, a horned helm over axes, a snowflake shield, a storm-cloud bolt, a spiral eye and a brimming chalice. Hover an emblem for a large portrait.
+
+Every skill reads at a glance (there is a legend bottom-left):
+- **SEALED:** a dark silhouette with a "?".
+- **OWNED:** framed in its rarity colour (silver, violet, gold), with rank pips above it and red pips below for how well he knows it.
+- **EQUIPPED:** a breathing gold ring, its slot number in a tab, and a thread up to that slot.
+- **SELECTED:** bouncing corner brackets.
+
+A bough glows along its length up to the furthest skill you own; a sealed class has a chain across its bough.
+
+- **Crown: your loadout, in any order.** Click or drag a skill onto a slot (swapping if it was elsewhere), or hover it and press 1-5. Click a slot to pick its skill up and move it; right-click to unequip.
+- **Roots: the Summoning Chest** (Dread). It rattles, light leaks through the seams (warming to violet or gold for a rare or legendary), the lid bursts open and the power rises out. Rarity is rolled first: 62% common, 30% rare, 8% legendary. Then the **pool**:
+  1. You get a skill you don't own, of that rarity.
+  2. If that rarity has run dry, you get an unowned skill of a lower rarity, **raised in rank by the difference**: a legendary chest gives a rank II rare or a rank III common. If only higher rarities are left, you get one at rank I.
+  3. Once you own everything, your weakest skill is reforged by more ranks the rarer the chest.
+
+  Nothing repeats while anything is left.
 
 | School | Skills (counter he learns) |
 |---|---|
@@ -203,7 +284,7 @@ Borrowed Sword (+10% damage) · Broken Oath-Ring (parry window +0.06s) · Champi
 | Void | Gravemaw (anchor), Abyssal Rift (step out), Phantom Hands (fall back), Eclipse of Self (kindle) |
 | Blood | Grasping Chains (break away), Hex of Frailty (cleanse), Blood Siphon (break line, heals you), Ghoul Brood (cleave) |
 
-- **ASCENSION page** (Dread, kept all run). Six branches of four:
+- **ASCENSION page** (Dread). Six boughs of four. **They reset every night, and each night's perks are 10% stronger** (the tooltips show tonight's numbers):
   - **Tyranny:** Iron Throne → Wrath → Crushing Presence → Colossal Will
   - **Cunning:** Quickened Malice → Unreadable → Mind Fog → Misdirection
   - **Hunger:** Dread Harvest → Generous Rites → Fated Hand → Bottomless Rite
@@ -214,7 +295,7 @@ Borrowed Sword (+10% damage) · Broken Oath-Ring (parry window +0.06s) · Champi
   - Colossus (+Will)
   - Tyrant's Might (+damage)
   - Ancient Grudge (starting Dread)
-  - Favored Fate (wider Rite zones)
+  - Favored Fate (better chest odds)
   - Unknowable (+1 fight for him to master anything)
   - Fifth Finger (+1 loadout slot)
   - Titan's Reflex (wider parry window)
@@ -246,6 +327,13 @@ Everything is built in code; the only scene is an empty `scenes/main.tscn`.
 - `scripts/ui/prestige_screen.gd`: the ascension, stars and Crown tally sequence
 - `scripts/ui/star_bar.gd`, `hotbar.gd`: HUD pieces
 - `scripts/ui/ui_art.gd`: pixel font, 12×12 icons (edit the text grids), frames and buttons
+- `scripts/ui/class_art.gd`: the seven 16×16 class emblems
+- `scripts/ui/inventory.gd`: the blade inventory with a turning 3D preview
+- `scripts/ui/settings_menu.gd` + `scripts/settings.gd` (autoload): rebindable controls (InputMap actions), mouse, sound, video
+- `scripts/vox.gd`: loads the Blender voxel models and hangs their parts on the animated joints
+- `scripts/water.gdshader`: depth-coloured water with foam, refraction and pixel waves
+- `tools/voxel_models.py`: **the Blender voxel model generator**. Re-run it to rebuild every model in `assets/models/`:
+  `blender --background --factory-startup --python tools/voxel_models.py -- <project dir>` (the Microsoft Store build runs via `blender-launcher.exe`). Then open the project in Godot (or run `godot --headless --import`) to re-import.
 
 ## Testing
 
@@ -260,7 +348,12 @@ The bot plays everything: by day it walks out through a gate to the day's boss a
 - `--level=N`: start a preview on day / night N
 - `--shot=file.png` (`--shot-delay=S`): save a screenshot after S seconds and quit (needs a renderer, e.g. `xvfb-run ... --rendering-driver opengl3`)
 - `--trace-bot`: print the day bot's position every half second
-- `--pos=x,z,yaw`: (with `--preview-day`) stand somewhere in Vael; `--talk=<npc>` opens a conversation; `--map` opens the map
+- `--pos=x,z,yaw`: (with `--preview-day`) stand somewhere in Vael; `--talk=<npc>` opens a conversation; `--map` opens the map; `--time=0.5` sets the time of day; `--inventory` / `--settings` open those screens
 - `--gesture=<skill>`: (with `--preview-heroes`) freeze that skill's hand gesture half way
 
-Last full run (`--autoplay --fast --quit-at-end`): seven days and six nights end to end, 0 script errors. By day the bot won all seven of the Lamplighter's errands (all seven boons) and slew five of the six day bosses. On the board it won all six skirmishes (six trophies), outlasted 12 / 10 / 11 / 7 / 9 / 8 of the challengers' lives, then beat the Stranger on the last night (playstyle read as "parry"; phase choices: forget, forget everything). Every dialogue, service, secret, page, chest, the forge and the map were also exercised by a scripted pass. It has not yet been played by hand with mouse and keyboard.
+Last full run (`--autoplay --fast --quit-at-end`): seven days and six nights end to end, **0 script errors**.
+- **By day** the bot slew all six day bosses, upgraded its blade three times from the inventory, and opened 315 summoning chests across the run (the pool fell back to other rarities with raised ranks once a rarity ran dry).
+- **At night**, against the faster-learning, parrying hero, it lasted only 6 / 7 / 6 / 6 / 7 / 9 of the challengers' deaths. The previous build managed 12 / 10 / 11 / 7 / 9 / 8. On night 4 it was conquered twice before earning a star and retried from the checkpoint.
+- **The last night:** it beat the Stranger (playstyle read as "parry"; phase choices: forget, forget everything).
+
+It has not yet been played by hand with mouse and keyboard.

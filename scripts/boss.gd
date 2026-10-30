@@ -12,6 +12,9 @@ extends Node3D
 ## you through the city of Vael (overworld.gd handles collisions and casting).
 
 const Fx := preload("res://scripts/fx.gd")
+const Swords := preload("res://scripts/swords.gd")
+const Dialogue := preload("res://scripts/dialogue.gd")
+const Vox := preload("res://scripts/vox.gd")
 # Hands held up before you, backs toward your eyes and fingers rising, the forearms dropping
 # out of view below: the way the hands are framed in the reference studies.
 const R_REST := Vector3(0.28, -0.37, -0.62)
@@ -60,6 +63,13 @@ var skin_tip_mat: StandardMaterial3D
 var claw_cone_mat: StandardMaterial3D
 var flap_mat: StandardMaterial3D
 var purity := 0.0
+# Voxel hands (Blender, tools/voxel_hands.py): neutral voxels tinted by these, synced in apply_purity
+var vox_skin: StandardMaterial3D
+var vox_mid: StandardMaterial3D
+var vox_tip: StandardMaterial3D
+var vox_vein: StandardMaterial3D
+var vox_sleeve: StandardMaterial3D
+var vox_trim: StandardMaterial3D
 var hand_parts: Array = []  # per hand: {thorns, shackle, chain, bracelet, smoke, motes, tips, joints}
 var anim_r := 0.0
 var anim_l := 0.0
@@ -77,6 +87,10 @@ var gcd := 0
 var queued_cast := ""
 var queued_parry := false
 var tick_flash := 0.0
+# Parry feedback: a clean parry CLASHES (hands snap out, sparks, hit-stop); an empty one FUMBLES
+var parry_hit := false
+var clash_t := 0.0
+var fumble_t := 0.0
 # Walker (daytime) mode
 var walker := false
 var ow                 # the overworld, when walking
@@ -95,8 +109,63 @@ var fidget_hand := 0
 var fidget_cd := 4.0
 var wand: Node3D
 var debug_freeze := -1.0     # debug: hold the gesture at this point (for screenshots)
-var holding := false   # walker: a blade in the right hand (the fingers close around its grip)
-var swing := 0.0       # walker: 1 -> 0 over a sword swing (a diagonal slash across the view)
+var holding := false   # a blade in the right hand (the fingers close around its grip)
+var swing := 0.0       # 1 -> 0 over a sword swing
+var swing_rate := 2.5  # 1 / swing duration
+var swing_style := "diagonal"
+var swing_mirror := 1.0
+var swing_count := 0
+var weapon_node: Node3D
+var weapon_tip: Node3D
+var weapon_orbit: Node3D
+var trail: CPUParticles3D
+var arena_blade_t := 0.0   # arena: the summoned blade fades after the cut
+# Traversal (walker)
+var crouch := false
+var jump_held := false
+var vy := 0.0
+var on_ground := true
+var coyote := 0.0
+var stamina := 100.0
+var dodge_t := 0.0
+var dodge_cd := 0.0
+var dodge_dir := Vector3.ZERO
+var dodge_side := 1.0
+var slide_t := 0.0
+var slide_dir := Vector3.ZERO
+var mantle_t := 0.0
+var mantle_from := Vector3.ZERO
+var mantle_to := Vector3.ZERO
+var eye := 1.65
+var step_t := 0.0
+var land_dip := 0.0
+
+# Every blade has its own way of cutting: keyframes [progress, hand offset, hand rotation].
+# "mirror" styles alternate direction on every other swing (a forehand, then a backhand).
+const SWINGS := {
+	"slash": {"mirror": true, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.22, Vector3(0.16, 0.06, 0.06), Vector3(0.35, 0.9, -0.4)],
+		[0.5, Vector3(-0.34, -0.02, -0.22), Vector3(-0.15, -0.95, 0.55)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"diagonal": {"mirror": true, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.2, Vector3(0.1, 0.22, 0.05), Vector3(0.75, 0.3, -0.3)],
+		[0.55, Vector3(-0.4, -0.14, -0.2), Vector3(-0.9, -0.3, 0.9)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"backhand": {"mirror": false, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.18, Vector3(-0.22, 0.04, 0.04), Vector3(0.2, -0.85, 0.5)],
+		[0.45, Vector3(0.36, -0.04, -0.2), Vector3(-0.1, 1.0, -0.6)], [0.7, Vector3(0.3, 0.0, -0.1), Vector3(0.0, 0.9, -0.5)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"overhead": {"mirror": false, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.3, Vector3(0.0, 0.32, 0.12), Vector3(1.3, 0.0, 0.0)],
+		[0.55, Vector3(-0.04, -0.22, -0.3), Vector3(-1.05, 0.0, 0.05)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"chop": {"mirror": false, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.3, Vector3(0.06, 0.38, 0.22), Vector3(1.5, 0.25, 0.0)],
+		[0.48, Vector3(0.07, 0.4, 0.24), Vector3(1.55, 0.25, 0.05)], [0.62, Vector3(0.0, -0.28, -0.32), Vector3(-1.25, 0.0, 0.1)],
+		[0.8, Vector3(0.0, -0.26, -0.3), Vector3(-1.2, 0.0, 0.1)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"sweep": {"mirror": true, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.3, Vector3(0.42, -0.04, 0.14), Vector3(0.1, 1.2, -0.25)],
+		[0.7, Vector3(-0.55, -0.06, -0.18), Vector3(-0.1, -1.3, 0.3)], [1.0, Vector3.ZERO, Vector3.ZERO]], "roll": 0.12},
+	"thrust2": {"mirror": false, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.1, Vector3(0.0, 0.0, 0.1), Vector3(0.0, 0.0, 0.0)],
+		[0.25, Vector3(-0.05, 0.02, -0.4), Vector3(-0.35, -0.2, 0.0)], [0.42, Vector3(0.0, 0.0, 0.05), Vector3(0.0, 0.0, 0.0)],
+		[0.6, Vector3(-0.08, 0.06, -0.42), Vector3(-0.4, -0.3, 0.2)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"flourish": {"mirror": false, "spin": true, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.35, Vector3(-0.1, -0.12, 0.0), Vector3(-0.4, -0.6, 0.6)],
+		[0.62, Vector3(0.34, 0.24, -0.25), Vector3(0.9, 0.8, -0.7)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"lunge_sweep": {"mirror": false, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.15, Vector3(0.05, 0.0, 0.18), Vector3(0.1, 0.0, 0.0)],
+		[0.35, Vector3(-0.05, 0.0, -0.55), Vector3(-0.3, 0.0, 0.0)], [0.7, Vector3(-0.5, -0.05, -0.3), Vector3(-0.1, -1.2, 0.5)], [1.0, Vector3.ZERO, Vector3.ZERO]]},
+	"rising": {"mirror": false, "keys": [[0.0, Vector3.ZERO, Vector3.ZERO], [0.25, Vector3(-0.3, -0.25, 0.05), Vector3(-0.6, -0.6, 0.7)],
+		[0.55, Vector3(0.35, 0.35, -0.25), Vector3(1.2, 0.7, -0.8)], [1.0, Vector3.ZERO, Vector3.ZERO]], "roll": -0.08},
+}
 const R_ROT := Vector3(1.0, 0.18, -0.22)
 const L_ROT := Vector3(1.0, -0.18, 0.22)
 # Holding a sword: the hand turns thumb-up, like a handshake, so the blade rises out of the fist.
@@ -174,6 +243,7 @@ func _ready() -> void:
 	wand.add_child(tip)
 	gem_mat = Fx.mat(Color.WHITE, 5.0)
 	wand.add_child(Fx.box(Vector3.ONE * 0.022, gem_mat, Vector3(0.012, 0.008, -0.285)))
+	_voxify_wand()
 	# A glow that gathers in each palm while a spell is being shaped, and a spray of sparks on release.
 	for hnd in [right_hand, left_hand]:
 		var pm := Fx.mat(Color.WHITE, 6.0, 0.85)
@@ -400,7 +470,108 @@ func _make_hand(side: float) -> Node3D:
 	parts["motes"] = motes
 	parts["side"] = side
 	hand_parts.append(parts)
+	_voxify_hand(h, parts, side)
 	return h
+
+
+func _vox_mat(src: Material, glow: bool) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	var base := src as BaseMaterial3D
+	if base:
+		m.albedo_texture = base.albedo_texture
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	m.roughness = 0.9
+	if glow:
+		m.emission_enabled = true
+		m.emission_texture = m.albedo_texture
+		m.emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY  # tint the white vein texels (ADD would wash them white)
+		m.emission_energy_multiplier = 2.5
+	return m
+
+
+## Swap the box skin of a hand for the Blender voxel hand (if it exists). The joints, claws,
+## nails, knobs, thorns, shackle, bracelet, flaps and cracks stay: they are the purity story.
+func _voxify_hand(h: Node3D, parts: Dictionary, side: float) -> void:
+	var vp := Vox.parts("hand_r" if side > 0.0 else "hand_l")
+	if vp.is_empty():
+		return
+	if vox_skin == null:
+		var any: MeshInstance3D = vp.values()[0]
+		var src := any.mesh.surface_get_material(0)
+		vox_skin = _vox_mat(src, false)
+		vox_mid = _vox_mat(src, false)
+		vox_tip = _vox_mat(src, false)
+		vox_sleeve = _vox_mat(src, false)
+		vox_trim = _vox_mat(src, false)
+		vox_vein = _vox_mat(src, true)
+	var skins := [skin_mat, vein_mat, scar_mat]
+	for c in h.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).material_override in skins:
+			h.remove_child(c)
+			c.queue_free()
+	for nm in ["forearm", "palm"]:
+		if vp.has(nm):
+			_vox_attach(h, vp[nm], vox_skin)
+	# The sleeve and its trim (the rags stay)
+	for c in h.get_children():
+		if c is Node3D and not (c is MeshInstance3D) and (c as Node3D).position.z > 0.4:
+			for cc in c.get_children():
+				if cc is MeshInstance3D and ((cc as MeshInstance3D).material_override == trim_mat or ((cc as MeshInstance3D).material_override == sleeve_mat and ((cc as MeshInstance3D).mesh as BoxMesh).size.x > 0.1)):
+					c.remove_child(cc)
+					cc.queue_free()
+	if vp.has("sleeve"):
+		_vox_attach(h, vp["sleeve"], vox_sleeve)
+	if vp.has("trim"):
+		_vox_attach(h, vp["trim"], vox_trim)
+	# Finger segments: replace each skin box, keep the knob, nail and claw
+	var segs: Array = parts["segdata"]
+	for n in segs.size():
+		var sd: Array = segs[n]
+		var nm := "f%d_%d" % [n / 3, n % 3]
+		if not vp.has(nm):
+			continue
+		var pivot: Node3D = sd[0]
+		var box: MeshInstance3D = sd[1]
+		box.queue_free()
+		pivot.remove_child(box)
+		for c in pivot.get_children():
+			if c is MeshInstance3D and (c as MeshInstance3D).material_override == crease_mat:
+				pivot.remove_child(c)
+				c.queue_free()
+		var part: MeshInstance3D = vp[nm]
+		_vox_attach(pivot, part, vox_mid if n % 3 == 0 else vox_tip)
+		part.set_meta("vox", true)
+		sd[1] = part
+	var thumb: Array = parts["thumb"]
+	for k in 3:
+		var tn: Node3D = thumb[k]
+		for c in tn.get_children():
+			if c is MeshInstance3D and (c as MeshInstance3D).material_override in [skin_mat, skin_mid_mat, skin_tip_mat]:
+				tn.remove_child(c)
+				c.queue_free()
+		if vp.has("t%d" % k):
+			_vox_attach(tn, vp["t%d" % k], [vox_skin, vox_mid, vox_tip][k])
+
+
+func _vox_attach(parent: Node3D, part: MeshInstance3D, mat: StandardMaterial3D) -> void:
+	parent.add_child(part)
+	# Pick by material: the glowing (vein) surface is not always the second one.
+	for s in part.mesh.get_surface_count():
+		var sm := part.mesh.surface_get_material(s)
+		var glow := sm != null and (str(sm.resource_name).ends_with("_glow") or ((sm as BaseMaterial3D) != null and (sm as BaseMaterial3D).emission_enabled))
+		part.set_surface_override_material(s, vox_vein if glow else mat)
+
+
+## The crooked wand as voxels (the glowing gem stays a live cube).
+func _voxify_wand() -> void:
+	var vp := Vox.parts("wand")
+	if vp.is_empty() or not vp.has("wand"):
+		return
+	for c in wand.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).material_override != gem_mat:
+			wand.remove_child(c)
+			c.queue_free()
+	wand.add_child(vp["wand"])
 
 
 ## Finger curls per pose, in radians toward the palm: [index, middle, ring, pinky] x [proximal,
@@ -597,14 +768,27 @@ func apply_purity(p: float) -> void:
 	ring_mark_mat.albedo_color = skin_mat.albedo_color.lightened(0.25)
 	crease_mat.albedo_color = skin_mat.albedo_color.darkened(0.35)
 	var c := 1.0 - purity
+	if vox_skin:
+		# Voxel hands: the neutral voxels take the same colours as the box skin did
+		vox_skin.albedo_color = skin_mat.albedo_color * 1.08
+		vox_mid.albedo_color = skin_mid_mat.albedo_color * 1.08
+		vox_tip.albedo_color = skin_tip_mat.albedo_color * 1.08
+		vox_sleeve.albedo_color = sleeve_mat.albedo_color * 1.08
+		vox_trim.albedo_color = trim_mat.albedo_color * 1.08
+		vox_vein.albedo_color = vc
+		vox_vein.emission = vc
+		vox_vein.emission_energy_multiplier = 2.0 + purity * 1.5
 	for parts in hand_parts:
 		# Corrupt fingers are long and thin (up to +35% length), with long black claws and swollen knuckles.
 		for sd in parts["segdata"]:
 			var L: float = float(sd[2]) * (1.0 + 0.35 * c)
 			var ww: float = float(sd[4]) * (1.0 - 0.15 * c)
 			var box: MeshInstance3D = sd[1]
-			(box.mesh as BoxMesh).size = Vector3(ww, ww * 0.85, L + 0.002)
-			box.position.z = -L * 0.5
+			if box.has_meta("vox"):
+				box.scale = Vector3(1.0 - 0.15 * c, 1.0 - 0.15 * c, 1.0 + 0.35 * c)
+			else:
+				(box.mesh as BoxMesh).size = Vector3(ww, ww * 0.85, L + 0.002)
+				box.position.z = -L * 0.5
 			var nxt: Node3D = sd[3]
 			if nxt != null:
 				nxt.position.z = -L * 0.55 if sd[5] else -L
@@ -634,12 +818,14 @@ func apply_purity(p: float) -> void:
 # --- Aiming -------------------------------------------------------------------
 
 func look(relative: Vector2) -> void:
+	var sens := SENSITIVITY * Settings.sensitivity
+	var dy := relative.y * (-1.0 if Settings.invert_y else 1.0)
 	if walker:
-		yaw = wrapf(yaw - relative.x * SENSITIVITY, -PI, PI)
-		pitch = clampf(pitch - relative.y * SENSITIVITY, -1.2, 1.1)
+		yaw = wrapf(yaw - relative.x * sens, -PI, PI)
+		pitch = clampf(pitch - dy * sens, -1.2, 1.1)
 		return
-	yaw = clampf(yaw - relative.x * SENSITIVITY, -YAW_LIMIT, YAW_LIMIT)
-	pitch = clampf(pitch - relative.y * SENSITIVITY, PITCH_MIN, PITCH_MAX)
+	yaw = clampf(yaw - relative.x * sens, -YAW_LIMIT, YAW_LIMIT)
+	pitch = clampf(pitch - dy * sens, PITCH_MIN, PITCH_MAX)
 
 
 ## Used by autoplay: smoothly turn the head toward a world point.
@@ -721,6 +907,8 @@ func on_tick_begin() -> void:
 	if queued_parry and parry_cd <= 0:
 		parry_t = GameState.parry_ticks()
 		parry_cd = GameState.parry_cd_ticks() + parry_t
+		parry_hit = false
+		Sfx.play("swing_light", -10.0, 1.4)
 	queued_parry = false
 	if queued_cast != "" and gcd <= 0:
 		var id := queued_cast
@@ -731,7 +919,10 @@ func on_tick_begin() -> void:
 
 ## End of a tick: everything counts down by one.
 func on_tick_end() -> void:
+	var was_up := parry_t > 0.0
 	parry_t = maxf(0.0, parry_t - 1)
+	if was_up and parry_t <= 0.0 and not parry_hit:
+		_parry_missed()
 	parry_cd = maxf(0.0, parry_cd - 1)
 	gcd = maxi(0, gcd - 1)
 	for id in cooldowns.keys():
@@ -774,7 +965,42 @@ func parry_cd_frac() -> float:
 ## A successful parry: hands clash, sparks, a small kick.
 func parried() -> void:
 	guard = 1.0
-	shake(0.25)
+	parry_hit = true
+	clash_t = 1.0
+	shake(0.3)
+	# Sparks off both palms
+	for pg in palm_glows:
+		var sp: CPUParticles3D = pg[2]
+		(sp.mesh as BoxMesh).material = Fx.mat(Color(1.0, 0.9, 0.55), 6.0)
+		sp.restart()
+		sp.emitting = true
+	if game and game.has_method("hitstop"):
+		game.hitstop(0.09)
+
+
+## The guard came up and nothing struck it: the hands fumble and drop.
+func _parry_missed() -> void:
+	fumble_t = 1.0
+	Sfx.play("deny", -8.0, 0.7)
+	if game:
+		game.popup_text(cam.global_position + (-cam.global_transform.basis.z) * 1.4 + Vector3(0, -0.35, 0), "MISSED", Color(0.75, 0.6, 0.6), 0.9)
+
+
+## Offsets for the parry animations: [position, rotation] for one hand (side = +1 right, -1 left).
+func _parry_fx(side: float) -> Array:
+	var pos := Vector3.ZERO
+	var rot := Vector3.ZERO
+	if clash_t > 0.0:
+		var k := 1.0 - clash_t
+		var e := sin(PI * minf(1.0, k * 2.5)) * (1.0 - k * 0.6)
+		pos += Vector3(side * 0.07, 0.06, -0.13) * e
+		rot += Vector3(-0.5, side * 0.3, side * 0.25) * e
+	if fumble_t > 0.0:
+		var k2 := 1.0 - fumble_t
+		var drop := sin(PI * k2)
+		pos += Vector3(side * 0.03, -0.14 * drop, 0.06 * drop)
+		rot += Vector3(0.45 * drop, 0.0, side * sin(k2 * 28.0) * 0.12 * (1.0 - k2))
+	return [pos, rot]
 
 
 func shake(amount: float) -> void:
@@ -840,26 +1066,44 @@ func _process(delta: float) -> void:
 		fidget_hand = randi() % 2
 	if wand:
 		wand.rotation.z = sin(t * 0.7) * 0.25
-	right_hand.position = R_REST + bob + flinch + guard_r + go_r[0]
-	left_hand.position = L_REST + bob * 0.8 + flinch + guard_l + go_l[0]
+	clash_t = maxf(0.0, clash_t - delta * 3.0)
+	fumble_t = maxf(0.0, fumble_t - delta * 2.2)
+	var pfx_r := _parry_fx(1.0)
+	var pfx_l := _parry_fx(-1.0)
+	right_hand.position = R_REST + bob + flinch + guard_r + go_r[0] + pfx_r[0]
+	left_hand.position = L_REST + bob * 0.8 + flinch + guard_l + go_l[0] + pfx_l[0]
 	var base_rot := R_ROT
 	if walker and holding:
 		base_rot = HOLD_ROT
 		right_hand.position += HOLD_POS - R_REST
 	var kk := 1.0 - exp(-delta * 14.0)
-	# Sword swing: wind up high and to the right (blade cocked back over the shoulder), then cut
-	# down and across to the left, the wrist rolling over as the blade passes.
-	swing = maxf(0.0, swing - delta * 5.0)
+	# Sword swing: each blade's own choreography (SWINGS), with a glowing trail off the tip.
+	swing = maxf(0.0, swing - delta * swing_rate)
+	if trail:
+		trail.emitting = swing > 0.08 and swing < 0.85
+	var roll := 0.0
 	if swing > 0.0:
 		var k := 1.0 - swing
-		var e := _ease(clampf((k - 0.15) / 0.7, 0.0, 1.0))
-		var lift := (1.0 - e) * clampf(k / 0.15, 0.0, 1.0)
-		right_hand.position += Vector3(lerpf(0.1, -0.4, e), lerpf(0.2, -0.14, e) + lift * 0.05, -0.2 * sin(PI * e))
-		right_hand.rotation = base_rot + Vector3(lerpf(0.7, -0.9, e), lerpf(0.3, -0.3, e), lerpf(-0.3, 0.9, e))
-	else:
+		var off := _swing_pose(k)
+		var m := swing_mirror
+		right_hand.position += Vector3(off[0].x * m, off[0].y, off[0].z)
+		var r: Vector3 = off[1]
+		right_hand.rotation = base_rot + Vector3(r.x, r.y * m, r.z * m)
+		var st: Dictionary = SWINGS.get(swing_style, SWINGS["diagonal"])
+		if st.get("spin", false) and k < 0.35:
+			right_hand.rotation.z += TAU * (k / 0.35)
+		roll = float(st.get("roll", 0.0)) * sin(PI * k) * m
+	cam.rotation.z = lerpf(cam.rotation.z, roll + (_dodge_roll() if walker else 0.0), 1.0 - exp(-delta * 18.0))
+	if is_instance_valid(weapon_orbit):
+		weapon_orbit.rotation.z += delta * 4.0
+	if arena_blade_t > 0.0:
+		arena_blade_t -= delta
+		if arena_blade_t <= 0.0 and not walker:
+			set_weapon(null)
+	if swing <= 0.0:
 		var tr: Vector3 = base_rot + go_r[1] + (guard_rot if not (walker and holding) else Vector3.ZERO)
-		right_hand.rotation = right_hand.rotation.lerp(tr, kk)
-	left_hand.rotation = left_hand.rotation.lerp(L_ROT + go_l[1] + guard_rot, kk)
+		right_hand.rotation = right_hand.rotation.lerp(tr, kk) + pfx_r[1] * 0.3
+	left_hand.rotation = left_hand.rotation.lerp(L_ROT + go_l[1] + guard_rot, kk) + pfx_l[1] * 0.3
 	# The palm glow swells as the spell is shaped and fades as it leaves the hand.
 	for hi in 2:
 		var pg: Array = palm_glows[hi]
@@ -891,20 +1135,212 @@ func _process(delta: float) -> void:
 
 ## Daytime: walk the streets of Vael. The overworld resolves collisions.
 func _walk(delta: float) -> void:
+	dodge_t = maxf(0.0, dodge_t - delta)
+	dodge_cd = maxf(0.0, dodge_cd - delta)
+	slide_t = maxf(0.0, slide_t - delta)
+	coyote = maxf(0.0, coyote - delta)
+	land_dip = move_toward(land_dip, 0.0, delta * 1.5)
+	# Climbing a ledge: a short lift and pull, then you stand on it.
+	if mantle_t > 0.0:
+		mantle_t -= delta
+		var s := clampf(1.0 - mantle_t / 0.38, 0.0, 1.0)
+		var up := _ease(clampf(s * 1.6, 0.0, 1.0))
+		var over := _ease(clampf((s - 0.45) / 0.55, 0.0, 1.0))
+		position = Vector3(lerpf(mantle_from.x, mantle_to.x, over), lerpf(mantle_from.y, mantle_to.y, up), lerpf(mantle_from.z, mantle_to.z, over))
+		head.position.y = eye - 0.25 * sin(PI * s)
+		if mantle_t <= 0.0:
+			on_ground = true
+			vy = 0.0
+		return
 	var fwd := Vector3(-sin(yaw), 0, -cos(yaw))
 	var right := Vector3(cos(yaw), 0, -sin(yaw))
 	var want := (fwd * move_input.y + right * move_input.x)
 	if want.length() > 1.0:
 		want = want.normalized()
-	var spd := 8.0 if sprint else 5.0
-	vel = vel.lerp(want * spd, 1.0 - exp(-delta * 10.0))
+	var flat := Vector2(vel.x, vel.z).length()
+	# Sprint costs stamina; crouching slows you; crouch while sprinting to slide.
+	var sprinting := sprint and stamina > 1.0 and want.length() > 0.1 and not crouch
+	if crouch and sprint and on_ground and slide_t <= 0.0 and flat > 6.0 and stamina >= 12.0:
+		slide_t = 0.7
+		slide_dir = Vector3(vel.x, 0, vel.z).normalized()
+		stamina -= 12.0
+		Sfx.play("slide", -4.0)
+	if sprinting:
+		stamina = maxf(0.0, stamina - 14.0 * delta)
+	elif dodge_t <= 0.0:
+		stamina = minf(100.0, stamina + (30.0 if on_ground else 10.0) * delta)
+	var spd := 8.5 if sprinting else (2.6 if crouch else 5.0)
+	if slide_t > 0.0:
+		vel = slide_dir * lerpf(3.0, 10.0, slide_t / 0.7)
+	elif dodge_t > 0.0:
+		vel = dodge_dir * 11.0 * (0.4 + 0.6 * dodge_t / 0.34)
+	else:
+		vel = vel.lerp(want * spd, 1.0 - exp(-delta * (10.0 if on_ground else 2.5)))
+	# Vertical: gravity, ground under you (you can stand on low props), landing.
+	var ground: float = ow.ground_at(position, 0.3) if ow else 0.0
+	# Wading: the shallows pull you down and slow you, every step a splash.
+	var wade: float = ow.water_depth_at(position) if ow else 0.0
+	if wade > 0.0 and ground <= 0.01:
+		ground = -minf(wade, 0.75)
+		vel *= 1.0 - minf(0.6, wade) * delta * 4.0
+	vy -= 20.0 * delta
+	position.y += vy * delta
+	if position.y <= ground:
+		if not on_ground and vy < -5.0:
+			land_dip = clampf(-vy * 0.02, 0.05, 0.25)
+			Sfx.play("land", -4.0)
+			shake(clampf(-vy * 0.02, 0.0, 0.3))
+		position.y = ground
+		vy = 0.0
+		if not on_ground:
+			on_ground = true
+	elif on_ground and position.y - ground > 0.05:
+		on_ground = false
+		coyote = 0.12
+	# Holding jump against a ledge in mid-air climbs it.
+	if jump_held and not on_ground and vy < 2.0 and want.length() > 0.1:
+		if _try_mantle():
+			return
 	var np := position + vel * delta
 	if ow:
-		np = ow.resolve(position, np, 0.4)
-	position = np
+		np = ow.resolve(position, np, 0.4, position.y)
+	position = Vector3(np.x, position.y, np.z)
 	var moving := Vector2(vel.x, vel.z).length()
-	walk_t += delta * moving * 2.2
-	head.position.y = 1.65 + absf(sin(walk_t)) * 0.05 * minf(1.0, moving / 5.0)
+	if on_ground:
+		walk_t += delta * moving * 2.2
+		step_t += delta * moving
+		if step_t > (2.4 if sprinting else 1.9) and slide_t <= 0.0:
+			step_t = 0.0
+			if ow and ow.water_depth_at(position) > 0.0:
+				Sfx.play("splash", -10.0, randf_range(0.8, 1.2))
+			else:
+				Sfx.play("step", -16.0 if crouch else -11.0, randf_range(0.85, 1.1))
+	var low := crouch or slide_t > 0.0
+	eye = lerpf(eye, 1.0 if low else 1.65, 1.0 - exp(-delta * 12.0))
+	head.position.y = eye - land_dip + absf(sin(walk_t)) * 0.05 * minf(1.0, moving / 5.0) * (1.0 if on_ground else 0.0)
+	if sprinting:
+		cam.fov = lerpf(cam.fov, 78.0, 1.0 - exp(-delta * 6.0))
+	else:
+		cam.fov = lerpf(cam.fov, 70.0, 1.0 - exp(-delta * 6.0))
+
+
+# --- Blades ------------------------------------------------------------------
+
+## Interpolated hand offset and rotation for the current swing at progress k (0..1).
+func _swing_pose(k: float) -> Array:
+	var keys: Array = SWINGS.get(swing_style, SWINGS["diagonal"])["keys"]
+	for i in keys.size() - 1:
+		var a: Array = keys[i]
+		var b: Array = keys[i + 1]
+		if k <= b[0]:
+			var s := _ease(clampf((k - a[0]) / maxf(0.001, b[0] - a[0]), 0.0, 1.0))
+			return [(a[1] as Vector3).lerp(b[1], s), (a[2] as Vector3).lerp(b[2], s)]
+	return [Vector3.ZERO, Vector3.ZERO]
+
+
+## Put a blade in the right hand (or take it away with null). Finds its tip for the trail.
+func set_weapon(node: Node3D, col: Color = Color.WHITE) -> void:
+	if is_instance_valid(weapon_node):
+		weapon_node.queue_free()
+	weapon_node = node
+	weapon_tip = null
+	weapon_orbit = null
+	trail = null
+	holding = node != null
+	if node == null:
+		return
+	right_hand.add_child(node)
+	weapon_tip = node.get_node_or_null("Tip")
+	weapon_orbit = node.get_node_or_null("Orbit")
+	if weapon_tip:
+		trail = Fx.particles(col, 40, 0.22, 0.05, 0.03)
+		trail.gravity = Vector3.ZERO
+		trail.spread = 5.0
+		trail.emitting = false
+		(trail.mesh as BoxMesh).material = Fx.mat(col, 5.0, 0.8)
+		weapon_tip.add_child(trail)
+
+
+## Start a swing in the style of this blade. duration in seconds.
+func start_swing(style: String, duration: float) -> void:
+	swing_style = style
+	swing_rate = 1.0 / clampf(duration, 0.25, 1.2)
+	swing = 1.0
+	swing_count += 1
+	var st: Dictionary = SWINGS.get(style, SWINGS["diagonal"])
+	swing_mirror = -1.0 if st.get("mirror", false) and swing_count % 2 == 0 else 1.0
+
+
+## The arena: the tyrant's blade appears in his hand for one cut, then fades.
+func swing_blade(id: String) -> void:
+	var W: Dictionary = Dialogue.WEAPONS.get(id, Dialogue.WEAPONS["shortsword"])
+	if not is_instance_valid(weapon_node):
+		var n := Swords.build(id, 0.42 + float(W["reach"]) * 0.06, GameState.weapon_tune)
+		n.position = Vector3(0.0, -0.03, -0.085)
+		n.rotation = Vector3(0, PI / 2.0 - 0.3, 0)
+		set_weapon(n, W["color"])
+		game.spawn_burst(hand_tip(), W["color"], 14)
+	var dur := clampf(int(W["ticks"]) * GameState.TICK * 0.9, 0.35, 1.0)
+	start_swing(Swords.swing_style(id), dur)
+	arena_blade_t = dur + 0.25
+
+
+# --- Traversal (walker) ---------------------------------------------------------
+
+func try_jump() -> void:
+	if mantle_t > 0.0 or slide_t > 0.0:
+		return
+	if (on_ground or coyote > 0.0) and stamina >= 8.0:
+		vy = 7.0
+		on_ground = false
+		coyote = 0.0
+		stamina -= 8.0
+		Sfx.play("jump", -6.0)
+		return
+	_try_mantle()
+
+
+func try_dodge() -> void:
+	if dodge_cd > 0.0 or stamina < 25.0 or mantle_t > 0.0:
+		return
+	var fwd := Vector3(-sin(yaw), 0, -cos(yaw))
+	var right := Vector3(cos(yaw), 0, -sin(yaw))
+	var d := fwd * move_input.y + right * move_input.x
+	if d.length() < 0.1:
+		d = -fwd
+	dodge_dir = d.normalized()
+	dodge_side = -1.0 if move_input.x < -0.1 else 1.0
+	dodge_t = 0.34
+	dodge_cd = 0.7
+	stamina -= 25.0
+	Sfx.play("roll", -4.0)
+
+
+func is_dodging() -> bool:
+	return dodge_t > 0.12
+
+
+func _dodge_roll() -> float:
+	if dodge_t <= 0.0:
+		return 0.0
+	return sin(PI * (1.0 - dodge_t / 0.34)) * 0.35 * dodge_side
+
+
+## Climb onto a ledge in front of you (crates, stalls, low walls, the fountain rim).
+func _try_mantle() -> bool:
+	if ow == null:
+		return false
+	var fwd := Vector3(-sin(yaw), 0, -cos(yaw))
+	var top: float = ow.ledge_top(position, fwd)
+	if top < 0.0:
+		return false
+	mantle_from = position
+	mantle_to = Vector3(position.x + fwd.x * 0.8, top, position.z + fwd.z * 0.8)
+	mantle_t = 0.38
+	vy = 0.0
+	stamina -= 6.0
+	Sfx.play("land", -6.0, 1.3)
+	return true
 
 
 func _ease(a: float) -> float:

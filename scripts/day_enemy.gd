@@ -13,6 +13,7 @@ signal died(enemy)
 
 const Fx := preload("res://scripts/fx.gd")
 const PixTex := preload("res://scripts/pixtex.gd")
+const Vox := preload("res://scripts/vox.gd")
 
 var ow
 var kind := "thug"
@@ -45,6 +46,11 @@ var leg_l: Node3D
 var leg_r: Node3D
 var edge_mat: StandardMaterial3D
 var body_mats: Array[StandardMaterial3D] = []
+var model_id := ""          # which voxel model (boss id, or the kind)
+var vox_meshes: Array = []
+var hp_bar: MeshInstance3D
+var bar_flash := 0.0
+static var _bar_mat: ShaderMaterial
 var countdown: Label3D
 var name_label: Label3D
 
@@ -69,6 +75,19 @@ func _ready() -> void:
 	countdown.position = Vector3(0, 2.3, 0)
 	countdown.visible = false
 	add_child(countdown)
+	# A tiny health bar over the head, shown once the fight is on
+	if _bar_mat == null:
+		_bar_mat = ShaderMaterial.new()
+		_bar_mat.shader = load("res://scripts/healthbar.gdshader")
+	hp_bar = MeshInstance3D.new()
+	var qm := QuadMesh.new()
+	qm.size = Vector2(0.8 if not is_boss else 1.0, 0.1 if not is_boss else 0.12)
+	hp_bar.mesh = qm
+	hp_bar.material_override = _bar_mat
+	hp_bar.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	hp_bar.position = Vector3(0, 2.12 if not is_boss else 2.5, 0)
+	hp_bar.visible = false
+	add_child(hp_bar)
 	if is_boss or elite:
 		name_label = Label3D.new()
 		name_label.text = display_name
@@ -166,6 +185,9 @@ func _build() -> void:
 			arm_l = arm
 		else:
 			arm_r = arm
+	# The voxel body made in Blender replaces the boxes.
+	vox_meshes = Vox.voxify("foe_" + (model_id if model_id != "" else kind), {"leg_l": leg_l, "leg_r": leg_r, "torso": torso,
+		"head": head, "arm_l": arm_l, "arm_r": arm_r})
 	# Weapon: iron with an aether edge (axe for brutes/thugs, a staff for casters, a bow for archers).
 	edge_mat = Fx.mat(tech, 2.5)
 	var w := Node3D.new()
@@ -206,6 +228,7 @@ func take_hit(amount: float, from: Vector3) -> void:
 		ow.popup(center() + Vector3(0, 0.6, 0), "BLOCKED", Color(0.6, 0.8, 1.0))
 	hp -= amount
 	flash_t = 0.12
+	bar_flash = 1.0
 	ow.popup(center() + Vector3(randf_range(-0.3, 0.3), 0.8, 0), str(int(round(amount))), Color(1.0, 0.9, 0.6))
 	var away := Vector3(position.x - from.x, 0, position.z - from.z)
 	if away.length() > 0.01 and not is_boss:
@@ -314,6 +337,13 @@ func _physics_process(delta: float) -> void:
 	flash_t = maxf(0.0, flash_t - delta)
 	for m in body_mats:
 		m.emission_energy_multiplier = 3.0 if flash_t > 0.0 else 0.0
+	if not vox_meshes.is_empty():
+		Vox.set_flash(vox_meshes, flash_t > 0.0)
+	if hp_bar:
+		hp_bar.visible = not dead and (aggro or hp < max_hp)
+		bar_flash = maxf(0.0, bar_flash - delta * 4.0)
+		hp_bar.set_instance_shader_parameter("fill", clampf(hp / max_hp, 0.0, 1.0))
+		hp_bar.set_instance_shader_parameter("flash", bar_flash * 0.6)
 	if dead or ow == null or ow.walker == null:
 		return
 	var pp: Vector3 = ow.walker.position

@@ -32,6 +32,9 @@ const SlamScript := preload("res://scripts/attacks/slam.gd")
 const OverworldScript := preload("res://scripts/overworld.gd")
 const Dialogue := preload("res://scripts/dialogue.gd")
 const PixTex := preload("res://scripts/pixtex.gd")
+const SettingsMenuScript := preload("res://scripts/ui/settings_menu.gd")
+const Swords := preload("res://scripts/swords.gd")
+const PAUSABLE := ["day", "fight", "board", "dusk", "wake"]
 const ATTACKS := {
 	"fireball": preload("res://scripts/attacks/fireball.gd"),
 	"volley": preload("res://scripts/attacks/fireball.gd"),
@@ -85,6 +88,13 @@ var env: Environment
 var world_env: WorldEnvironment
 var ow  # the city of Vael (by day)
 var tick_acc := 0.0
+var paused_state := ""
+# Conversations by day: when set, cards and choices open as a panel at the bottom of the screen with
+# a live portrait of whoever is speaking, instead of covering the screen.
+var dialogue_speaker: Node3D = null
+var portrait_cam: Camera3D
+var swing_queued := false   # your blade in the arena (fight_swing)
+var swing_cd := 0
 var lights: Array = []  # [light, base_energy, flickers]
 var darkness := 0.0
 var darkness_target := 0.0
@@ -177,6 +187,8 @@ func _ready() -> void:
 	GameState.mastery_milestone.connect(_on_mastery_milestone)
 	theme_res = _make_theme()
 	_build_world()
+	apply_settings()
+	Settings.changed.connect(apply_settings)
 	_build_hud()
 	_build_board()
 	_build_board_hud()
@@ -216,6 +228,19 @@ func _ready() -> void:
 				ow.walker.yaw = deg_to_rad(float(v[2])) if v.size() > 2 else 0.0
 			if a == "--map":
 				ow._toggle_map.call_deferred()
+			if a.begins_with("--time="):
+				GameState.day_time = float(a.trim_prefix("--time="))
+			if a == "--inventory":
+				# Debug: a few blades, one upgraded, then the inventory (for screenshots)
+				GameState.crowns = 60
+				for wid in ["runeblade", "cogaxe", "arcbrand"]:
+					GameState.give_weapon(wid)
+				GameState.weapons["arcbrand"] = 3
+				GameState.equip_weapon("arcbrand")
+				ow._build_weapon()
+				ow.open_inventory.call_deferred()
+			if a == "--settings":
+				_open_settings.call_deferred()
 			if a.begins_with("--talk="):
 				# Debug: open a conversation straight away (for screenshots).
 				ow._talk.call_deferred(a.trim_prefix("--talk="))
@@ -272,6 +297,7 @@ func _setup_hero_preview() -> void:
 		var h = HeroScript.new()
 		h.game = self
 		h.form = st["form"]
+		h.tier = i * 2 + 1
 		h.hero_scale = st["scale"]
 		h.armor_color = st["armor"]
 		h.cape_color = st["cape"]
@@ -429,7 +455,18 @@ func clamp_arena(p: Vector3) -> Vector3:
 	return Vector3(clampf(p.x, -6.5, 6.5), 0, clampf(p.z, -14.0, -1.8))
 
 
+## The spell leaves your hand: a flash of its colour at the fingertips and a small kick.
+func _cast_flash(col: Color) -> void:
+	var p := Fx.particles(col, 14, 0.3, 2.5, 0.05, true)
+	world.add_child(p)
+	p.global_position = boss.hand_tip()
+	get_tree().create_timer(0.8, false).timeout.connect(p.queue_free)
+	boss.shake(0.08)
+
+
+## Every impact: sparks, a shockwave ring on the ground, a puff of smoke and a flash of light.
 func spawn_burst(pos: Vector3, color: Color, amount: int = 16) -> void:
+	Fx.impact(world, pos, color, clampf(amount / 18.0, 0.6, 2.0))
 	var p := Fx.particles(color, amount, 0.5, 4.0, 0.09, true)
 	world.add_child(p)
 	p.global_position = pos
@@ -552,7 +589,7 @@ func _start_attempt() -> void:
 	elif not GameState.pending_lessons.is_empty():
 		var learned: Array[String] = []
 		for l in GameState.pending_lessons:
-			var sk: Dictionary = GameState.SKILLS[l[0]]
+			var sk: Dictionary = GameState.skill_info(l[0])
 			learned.append(("%s (MASTERED)" if l[1] >= 3 else "%s") % sk["counter"])
 		show_message(title + " RETURNS. HE LEARNED.", "He will now " + ", ".join(learned) + cp, 3.0)
 		tutorial("adapt", "He has ADAPTED to one of your skills. Visit the Grimoire between fights and swap in something he has not seen.")
@@ -671,7 +708,9 @@ func spawn_attack(id: String) -> bool:
 		get_tree().create_timer(0.45, false).timeout.connect(_second_tide)
 	elif id == "thunder":
 		get_tree().create_timer(0.55, false).timeout.connect(_second_thunder)
-	Sfx.play("cast", -8.0, randf_range(0.8, 1.3))
+	Sfx.play("cast", -12.0, randf_range(0.8, 1.3))
+	Sfx.cast_school(GameState.SKILLS[id]["school"])
+	_cast_flash(GameState.SKILLS[id]["color"])
 	GameState.level_skills_used[id] = true
 	return true
 
@@ -704,12 +743,25 @@ func boss_x() -> float:
 	return boss.position.x
 
 
-func spawn_hero_bolt(from: Vector3, dmg: float) -> void:
+## He parried one of your attacks: it comes back at your face for 150%.
+func on_hero_parry(h, dmg: float, skill_id: String) -> void:
+	var col: Color = GameState.SKILLS[skill_id]["color"] if GameState.SKILLS.has(skill_id) else Color(1.0, 0.9, 0.7)
+	spawn_burst(h.center() + Vector3(0, 0.2, 0.3), Color.WHITE, 24)
+	Sfx.play("parry", 0.0, 0.8)
+	Sfx.play("block", -2.0)
+	popup_text(h.center() + Vector3(0, 1.3, 0), "RETURNED x1.5", col, 1.1)
+	tutorial("hero_parry", "He PARRIED you: your attack comes back at your face for 150%. Parry it on the beat it lands, or lean out of its path.", true)
+	spawn_hero_bolt(h.center() + Vector3(0, 0.3, 0.4), dmg, col, true)
+
+
+func spawn_hero_bolt(from: Vector3, dmg: float, col: Color = Color(1.0, 0.85, 0.4), returned: bool = false) -> void:
 	if state != "fight":
 		return
 	tutorial("bolt", "A HOLY BOLT flies at your face. PARRY it as it arrives, or LEAN out of its path.", true)
 	var b = HeroBoltScript.new()
 	b.game = self
+	b.color = col
+	b.returned = returned
 	b.damage = dmg
 	b.target = boss.head.global_position + Vector3(0, -0.2, -0.6)
 	b.add_to_group("attacks")
@@ -728,7 +780,7 @@ func heal_boss(amount: float) -> void:
 func on_hero_damaged(h, dmg: float, skill_id: String) -> void:
 	if GameState.active_class == "blood" and state == "fight":
 		boss_hp = minf(boss_max, boss_hp + dmg * 0.1)
-	var col: Color = GameState.SKILLS[skill_id]["color"]
+	var col: Color = GameState.SKILLS[skill_id]["color"] if GameState.SKILLS.has(skill_id) else Color(1.0, 0.9, 0.7)
 	popup_text(h.center() + Vector3(randf_range(-0.3, 0.3), 0.9, 0), str(int(round(dmg))), col, 1.2)
 
 
@@ -736,16 +788,29 @@ func _on_hero_struck(dmg: float) -> void:
 	_take_blow(dmg, true)
 
 
-func on_hero_struck_ranged(dmg: float, target: Vector3) -> void:
+func on_hero_struck_ranged(dmg: float, target: Vector3, returned: bool = false) -> void:
 	# A bolt aimed where your head WAS: lean out of its path and it only grazes you.
 	if absf(target.x - boss.head.global_position.x) > 1.0:
 		popup_text(target, "GRAZED", Color(0.8, 0.9, 1.0), 1.0)
 		dmg *= GameState.graze_taken()
-	_take_blow(dmg, false)
+	_take_blow(dmg, false, returned)
+
+
+## A brief freeze on impact (a clean parry): the whole world holds its breath for a few frames.
+## Red at the edges of the screen, stronger the harder the blow.
+func hurt_pulse(amount: float) -> void:
+	hurt_overlay.color.a = maxf(hurt_overlay.color.a, 0.45 + 0.5 * amount)
+
+
+func hitstop(seconds: float) -> void:
+	if GameState.autoplay:
+		return
+	Engine.time_scale = base_time_scale * 0.08
+	get_tree().create_timer(seconds, true, false, true).timeout.connect(func(): Engine.time_scale = base_time_scale)
 
 
 ## Every blow he lands on you. Inside your parry window it only grazes a lesser part of you.
-func _take_blow(dmg: float, melee: bool) -> void:
+func _take_blow(dmg: float, melee: bool, returned: bool = false) -> void:
 	if state != "fight":
 		return
 	var parried: bool = boss.is_parrying()
@@ -755,19 +820,22 @@ func _take_blow(dmg: float, melee: bool) -> void:
 		tutorial("violet", "A VIOLET blade cannot be parried. LEAN out of it with A / D.")
 	if parried:
 		dmg *= GameState.parry_taken()
+		if returned:
+			dmg = 0.0  # your own attack, sent back: a clean parry takes all of it
 		GameState.on_parry()
 		boss.parried()
 		Sfx.play("parry")
-		flash(Color(1.0, 0.95, 0.7), 0.25)
-		spawn_burst(Vector3(0, 1.9, -1.3), Color(1.0, 0.9, 0.5), 26)
-		popup_text(Vector3(0, 2.0, -1.6), "PARRIED · ONLY %d" % int(round(dmg)), Color(1.0, 0.92, 0.6), 1.2)
+		Sfx.play("block", -4.0)
+		flash(Color(1.0, 0.95, 0.7), 0.3)
+		spawn_burst(Vector3(boss_x(), 1.9, -1.3), Color(1.0, 0.9, 0.5), 30)
+		popup_text(Vector3(boss_x(), 2.0, -1.6), ("PERFECT PARRY · 0" if returned else "PARRIED · ONLY %d" % int(round(dmg))), Color(1.0, 0.92, 0.6), 1.3)
 		if melee and GameState.perks.has("riposte") and is_instance_valid(hero) and not hero.dead:
 			hero.stun(1.0)
 			hero.announce("STAGGERED")
 	else:
 		boss.hurt()
 		Sfx.play("boss_hurt")
-		hurt_overlay.color.a = 0.5
+		hurt_pulse(clampf(dmg / maxf(1.0, boss_max) * 6.0, 0.35, 1.0))
 		spawn_burst(Vector3(0, 1.8, -1.4), Color(1, 0.3, 0.2), 14)
 	boss_hp -= dmg
 	print("[STRIKE] hero hits boss for %.1f (parried=%s), boss %d/%d" % [dmg, parried, int(boss_hp), int(boss_max)])
@@ -828,6 +896,19 @@ func _on_mastery_milestone(_skill_id: String, _tier: int) -> void:
 # =============================================================================
 
 func _input(event: InputEvent) -> void:
+	# ESC: the pause menu (settings, inventory, restart) from anywhere you can play.
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+		if is_instance_valid(overlay) and overlay.has_meta("pause"):
+			get_viewport().set_input_as_handled()
+			_resume()
+			return
+		if ow.active and ow.map_open:
+			ow.handle_input(event)
+			return
+		if not is_instance_valid(overlay) and (state in PAUSABLE or ow.active):
+			get_viewport().set_input_as_handled()
+			_pause()
+			return
 	# Cards and choices: 1-9 pick a choice, ENTER / SPACE presses the first button.
 	if is_instance_valid(overlay) and event is InputEventKey and event.pressed and not event.echo and state != "throne":
 		var idx: int = event.keycode - KEY_1
@@ -839,41 +920,45 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			card_button.pressed.emit()
 			return
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F2:
+		Settings.pixel_size = [3, 4, 2][posmod([3, 4, 2].find(Settings.pixel_size) + 1, 3)]
+		Settings.apply()
+		Settings.save()
+		return
+	if ow.active:
+		ow.handle_input(event)
+		return
 	if state == "board" and not is_instance_valid(overlay):
 		if event is InputEventKey and event.pressed and not event.echo:
-			match event.keycode:
-				KEY_SPACE, KEY_ENTER, KEY_KP_ENTER:
-					_board_advance()
-				KEY_T:
-					throne_mode = "board"
-					_open_throne()
+			if event.keycode in [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER]:
+				_board_advance()
+			elif event.is_action_pressed("throne"):
+				throne_mode = "board"
+				_open_throne()
 		elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			_board_advance()
 		return
 	if state == "fight" and not get_tree().paused and not is_instance_valid(overlay):
 		if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-			boss.look(event.relative)
-		elif event is InputEventMouseButton and event.pressed:
-			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-				_capture_mouse()
-			elif event.button_index == MOUSE_BUTTON_LEFT:
-				boss.try_cast(boss.selected_id())
-			elif event.button_index == MOUSE_BUTTON_RIGHT:
-				boss.try_parry()
-			elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
-				boss.cycle(-1)
-			elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-				boss.cycle(1)
-		elif event is InputEventKey and event.pressed and not event.echo:
-			match event.keycode:
-				KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
-					boss.select(event.keycode - KEY_1)
-				KEY_ESCAPE:
-					_pause()
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_F2:
-			pixel_index = (pixel_index + 1) % pixel_scales.size()
-			view_container.stretch_shrink = pixel_scales[pixel_index]
+			boss.look(event.screen_relative)
+			return
+		if event is InputEventMouseButton and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			_capture_mouse()
+			return
+		if event.is_action_pressed("fight_cast"):
+			boss.try_cast(boss.selected_id())
+		elif event.is_action_pressed("parry"):
+			boss.try_parry()
+		elif event.is_action_pressed("fight_swing"):
+			swing_queued = true
+		elif event.is_action_pressed("skill_prev"):
+			boss.cycle(-1)
+		elif event.is_action_pressed("skill_next"):
+			boss.cycle(1)
+		else:
+			for k in 5:
+				if event.is_action_pressed("skill_%d" % (k + 1)):
+					boss.select(k)
 
 
 func _process(delta: float) -> void:
@@ -885,16 +970,20 @@ func _process(delta: float) -> void:
 		var flick := (0.85 + randf() * 0.15) if entry[2] else 1.0
 		l.light_energy = entry[1] * flick * (1.0 - 0.92 * darkness)
 
-	hurt_overlay.color.a = move_toward(hurt_overlay.color.a, 0.0, delta * 1.5)
+	# The vignette fades; at low Will it never quite leaves, and beats like a heart.
+	var floor_a := 0.0
+	if state == "fight" and boss_max > 0.0 and boss_hp / boss_max < 0.3:
+		floor_a = 0.18 + 0.14 * maxf(0.0, sin(Time.get_ticks_msec() * 0.008))
+	hurt_overlay.color.a = maxf(floor_a, move_toward(hurt_overlay.color.a, 0.0, delta * 1.2))
 	flash_overlay.color.a = move_toward(flash_overlay.color.a, 0.0, delta * 2.0)
 
 	if state == "fight" or state == "hero_fallen" or state == "boss_fallen":
 		_update_hud()
 	var lean := 0.0
 	if state == "fight" and not get_tree().paused:
-		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		if Input.is_action_pressed("move_left"):
 			lean -= 1.0
-		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		if Input.is_action_pressed("move_right"):
 			lean += 1.0
 	if state == "fight" and is_instance_valid(hero) and not hero.dead:
 		if hero.state == "windup":
@@ -905,6 +994,11 @@ func _process(delta: float) -> void:
 			tutorial("lunge", "He crouches to LUNGE from range. Parry or lean when he lands.", true)
 		elif hero.state == "leap_charge":
 			tutorial("leap", "He is about to LEAP onto your dais. A heavy blow. Parry or lean as he lands.", true)
+	# A conversation by day: keep the portrait on their face, and turn to look at them.
+	if is_instance_valid(overlay) and overlay.has_meta("dialogue") and is_instance_valid(dialogue_speaker):
+		_place_portrait()
+		var h: float = dialogue_speaker.portrait_height() if dialogue_speaker.has_method("portrait_height") else 1.45
+		ow.walker.look_toward(dialogue_speaker.global_position + Vector3(0, h, 0), delta * 0.8)
 	if state == "fight" and GameState.autoplay:
 		_autoplay_fight(delta)
 		if auto_lean_t > 0.0:
@@ -932,12 +1026,40 @@ func _process(delta: float) -> void:
 ## One combat tick: your queued cast/parry, his thinking, holy bolts landing, then cooldowns.
 func _fight_tick() -> void:
 	boss.on_tick_begin()
+	swing_cd = maxi(0, swing_cd - 1)
+	if swing_queued and swing_cd <= 0:
+		swing_queued = false
+		_arena_swing()
 	if state == "fight" and is_instance_valid(hero) and not hero.dead:
 		hero.on_tick()
 	for b in get_tree().get_nodes_in_group("hero_bolts"):
 		if b.arrived and state == "fight":
 			b.resolve()
 	boss.on_tick_end()
+
+
+## Your blade in the arena: the tyrant's own sword, summoned into his hand for one vast cut
+## across the front of the dais. Only reaches him when he is close. He learns it like a skill
+## ("blade"), dodges it once he knows it, and can parry it back at you like anything else.
+func _arena_swing() -> void:
+	var W: Dictionary = Dialogue.WEAPONS.get(GameState.weapon, Dialogue.WEAPONS["shortsword"])
+	swing_cd = int(W["ticks"]) + 1
+	boss.swing_blade(GameState.weapon)
+	Sfx.play(Swords.swing_sound(GameState.weapon), -2.0, 0.8)
+	if not is_instance_valid(hero) or hero.dead:
+		return
+	var hp: Vector3 = hero.global_position
+	var reach := 3.2 + float(W["reach"]) * 0.45
+	if Vector2(hp.x - boss_x(), hp.z + 1.2).length() > reach:
+		return
+	GameState.expose("blade")
+	if hero.try_evade_blade():
+		return
+	var dmg: float = ow.weapon_damage() * 1.6
+	if hero.take_hit(dmg, "blade"):
+		spawn_burst(hero.center(), Color(1.0, 0.9, 0.7), 22)
+		boss.shake(0.25)
+		Sfx.play("impact", -2.0)
 
 
 func _autoplay_fight(delta: float) -> void:
@@ -956,6 +1078,9 @@ func _autoplay_fight(delta: float) -> void:
 	for id in GameState.loadout:
 		if boss.cooldown_left(id) <= 0.0:
 			ready.append(id)
+	# Up close, the bot cuts with its blade as well.
+	if is_instance_valid(hero) and Vector2(hero.position.x - boss_x(), hero.position.z + 1.2).length() < 4.0 and swing_cd <= 0 and randf() < 0.4:
+		swing_queued = true
 	if not ready.is_empty():
 		var id: String = ready.pick_random()
 		boss.select(GameState.loadout.find(id))
@@ -989,12 +1114,85 @@ func _autoplay_parry() -> void:
 		auto_parry_done = false
 
 
+## ESC: RESUME, SETTINGS (controls, mouse, sound, video), INVENTORY by day, HOW TO PLAY, RESTART, QUIT.
 func _pause() -> void:
+	paused_state = state
 	get_tree().paused = true
-	_show_card("PAUSED", "Your thoughts are still.", "RESUME", func():
+	var o := _new_overlay(0.75)
+	o.set_meta("pause", true)
+	var center := CenterContainer.new()
+	o.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	panel.add_child(vb)
+	var tl := _label("PAUSED", 40, GOLD)
+	tl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(tl)
+	var sub := _label("Your thoughts are still.", 16, DIM)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(sub)
+	var items: Array = [["RESUME", _resume], ["SETTINGS", _open_settings]]
+	if ow.active:
+		items.append(["INVENTORY", func():
+			_resume()
+			ow.open_inventory()])
+	items.append(["HOW TO PLAY", _show_help])
+	items.append(["RESTART THE RUN", func():
 		get_tree().paused = false
+		GameState.reset_run()
+		get_tree().reload_current_scene()])
+	items.append(["QUIT GAME", func(): get_tree().quit()])
+	choice_buttons.clear()
+	for it in items:
+		var b := _button(str(it[0]), it[1], 380)
+		b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		vb.add_child(b)
+		choice_buttons.append(b)
+	card_button = choice_buttons[0]
+	Sfx.play("menu_open", -6.0)
+
+
+func _resume() -> void:
+	get_tree().paused = false
+	_clear_overlay()
+	Sfx.play("menu_close", -6.0)
+	if paused_state == "fight" or ow.active:
+		_capture_mouse()
+
+
+func _open_settings() -> void:
+	var sm = SettingsMenuScript.new()
+	sm.game = self
+	sm.theme = theme_res
+	overlay_layer.add_child(sm)
+
+
+func _show_help() -> void:
+	var lines := [
+		"BY DAY: %s/%s/%s/%s move · %s jump & climb · %s sprint · %s crouch, or slide while sprinting · %s dodge roll" % [
+			Settings.key_name("move_forward"), Settings.key_name("move_left"), Settings.key_name("move_back"), Settings.key_name("move_right"),
+			Settings.key_name("jump"), Settings.key_name("sprint"), Settings.key_name("crouch"), Settings.key_name("dodge")],
+		"%s swing your blade · %s cast · %s parry · %s talk / open · %s inventory · %s map" % [
+			Settings.key_name("day_swing"), Settings.key_name("day_cast"), Settings.key_name("parry"), Settings.key_name("interact"),
+			Settings.key_name("inventory"), Settings.key_name("map")],
+		"IN THE FIGHT: %s cast · %s swing your blade · %s parry · %s / %s lean · 1-5 or the wheel pick a skill" % [
+			Settings.key_name("fight_cast"), Settings.key_name("fight_swing"), Settings.key_name("parry"),
+			Settings.key_name("move_left"), Settings.key_name("move_right")],
+		"COMBAT RUNS ON TICKS (0.25s). Inputs resolve on the next tick: mashing does nothing.",
+		"YOUR PARRY opens on the tick after you press it, for ONE tick. Press it while his countdown reads 1.",
+		"HE PARRIES TOO: a blocked attack comes back at you as a bolt for 150%. Parry it or lean out of it.",
+	]
+	_show_card("HOW TO PLAY", "\n\n".join(lines), "BACK", func():
 		_clear_overlay()
-		_capture_mouse())
+		_pause())
+
+
+func apply_settings() -> void:
+	if view_container:
+		view_container.stretch_shrink = Settings.pixel_size
 
 
 func _capture_mouse() -> void:
@@ -1172,7 +1370,8 @@ func _build_hud() -> void:
 	hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	hurt_overlay = ColorRect.new()
-	hurt_overlay.color = Color(0.6, 0.0, 0.0, 0.0)
+	hurt_overlay.color = Color(0.75, 0.02, 0.02, 0.0)
+	hurt_overlay.material = Fx.vignette_material()
 	hurt_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hud.add_child(hurt_overlay)
 	hurt_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -1357,6 +1556,9 @@ func _new_overlay(alpha: float = 0.82) -> Control:
 
 
 func _show_card(title: String, body: String, button_text: String, on_press: Callable, title_color: Color = Color.TRANSPARENT) -> void:
+	if is_instance_valid(dialogue_speaker) and ow.active:
+		_show_dialogue_panel(title, body, [[button_text, on_press]])
+		return
 	if title_color == Color.TRANSPARENT:
 		title_color = self.title_color()
 	var o := _new_overlay()
@@ -1385,6 +1587,9 @@ func _show_card(title: String, body: String, button_text: String, on_press: Call
 
 ## An Inscryption-style event card with several choices. options: [[label, Callable], ...]
 func _show_choice(title: String, body: String, icon_id: String, options: Array) -> void:
+	if is_instance_valid(dialogue_speaker) and ow.active:
+		_show_dialogue_panel(title, body, options)
+		return
 	var o := _new_overlay(0.7)
 	var center := CenterContainer.new()
 	o.add_child(center)
@@ -1423,6 +1628,93 @@ func _show_choice(title: String, body: String, icon_id: String, options: Array) 
 			first = false
 	if GameState.autoplay:
 		get_tree().create_timer(1.0).timeout.connect(_auto_press_card)
+
+
+## A conversation: a slim panel along the bottom of the screen, the speaker's face on the left (a
+## live camera in the world, so they blink and move), their words, and your answers numbered 1-9.
+## The world stays in view above it, and you turn to look at whoever is speaking.
+func _show_dialogue_panel(title: String, body: String, options: Array) -> void:
+	var o := _new_overlay(0.0)
+	o.color = Color(0, 0, 0, 0)
+	o.set_meta("dialogue", true)
+	var shade := ColorRect.new()
+	shade.color = Color(0.0, 0.0, 0.02, 0.55)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	o.add_child(shade)
+	_anchor(shade, 0, 1, 1, 1, 0, -276, 0, 0)
+	var panel := PanelContainer.new()
+	o.add_child(panel)
+	_anchor(panel, 0.5, 1, 0.5, 1, -580, -262, 580, -12)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 18)
+	panel.add_child(hb)
+	# The portrait: a pixelated live view of their face
+	var frame := PanelContainer.new()
+	frame.add_theme_stylebox_override("panel", _sb(Color(0.05, 0.03, 0.06), title_color(), 4))
+	hb.add_child(frame)
+	var svc := SubViewportContainer.new()
+	svc.custom_minimum_size = Vector2(200, 200)
+	svc.stretch = true
+	svc.stretch_shrink = 3
+	svc.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	frame.add_child(svc)
+	var vp := SubViewport.new()
+	vp.world_3d = sub_viewport.world_3d
+	vp.msaa_3d = Viewport.MSAA_DISABLED
+	svc.add_child(vp)
+	portrait_cam = Camera3D.new()
+	portrait_cam.fov = 30.0
+	portrait_cam.near = 0.05
+	vp.add_child(portrait_cam)
+	_place_portrait()
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(vb)
+	var tl := _label(title, 24, title_color())
+	vb.add_child(tl)
+	var bl := _label(body, 16, TEXT)
+	bl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	bl.custom_minimum_size = Vector2(800, 0)
+	bl.visible_ratio = 0.0
+	vb.add_child(bl)
+	var tw := bl.create_tween()
+	tw.tween_property(bl, "visible_ratio", 1.0, clampf(body.length() * 0.012, 0.25, 1.6))
+	var grid := GridContainer.new()
+	grid.columns = 2 if options.size() > 3 else 1
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 4)
+	vb.add_child(grid)
+	choice_buttons.clear()
+	for k in options.size():
+		var opt: Array = options[k]
+		var b := _button("%d.  %s" % [k + 1, str(opt[0])], opt[1], 396 if grid.columns == 2 else 800)
+		b.clip_text = true
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.custom_minimum_size.y = 34
+		grid.add_child(b)
+		choice_buttons.append(b)
+		if k == 0:
+			card_button = b
+	if GameState.autoplay:
+		get_tree().create_timer(1.0).timeout.connect(_auto_press_card)
+
+
+## Where the portrait camera sits: a little in front of the speaker's face, looking at it.
+func _place_portrait() -> void:
+	if not is_instance_valid(portrait_cam) or not portrait_cam.is_inside_tree() or not is_instance_valid(dialogue_speaker):
+		return
+	var h := 1.45 * dialogue_speaker.scale.y
+	if dialogue_speaker.has_method("portrait_height"):
+		h = dialogue_speaker.portrait_height()
+	var face := dialogue_speaker.global_position + Vector3(0, h, 0)
+	var dir: Vector3 = ow.walker.head.global_position - face
+	dir.y = 0.0
+	if dir.length() < 0.01:
+		dir = Vector3(0, 0, -1)
+	dir = dir.normalized()
+	portrait_cam.global_position = face + dir * 1.05 + Vector3(0, 0.04, 0)
+	portrait_cam.look_at(face, Vector3.UP)
 
 
 func _auto_press_card() -> void:
@@ -1555,8 +1847,8 @@ func _on_dusk_met() -> void:
 		_show_final_intro()
 		return
 	state = "dusk"
-	var line: Array = Dialogue.STRANGER_NIGHT[clampi(GameState.level - 1, 0, Dialogue.STRANGER_NIGHT.size() - 1)]
-	_show_card("THE HOLLOW FLAGON · NIGHT %d" % GameState.level, "%s\n\n%s" % [line[0], line[1]], "SIT DOWN", _enter_night)
+	# You already talked with him on the street; he leads you to the Flagon and the board.
+	_enter_night()
 
 
 func _enter_night() -> void:
@@ -1745,8 +2037,10 @@ func _open_throne() -> void:
 		tree.go_label = "MEET " + str(GameState.hero_data()["title"])
 	elif throne_mode == "board":
 		tree.go_label = "RETURN TO THE BOARD"
+	elif throne_mode == "day":
+		tree.go_label = "BACK TO VAEL"
 	if throne_mode == "between":
-		tutorial("rite", "Between his deaths: spend DREAD at the RITE (the roots) for powers he has never seen. Equip them on the GRIMOIRE page.")
+		tutorial("rite", "Between his deaths: open the SUMMONING CHEST (the roots) with DREAD for powers he has never seen. Drag them onto a LOADOUT slot.")
 	else:
 		tutorial("throne", "The Throne of Thought. Q / E switch pages: GRIMOIRE (skills & classes), ASCENSION (perks), ETERNITY (permanent).")
 	overlay_layer.add_child(tree)
@@ -1772,7 +2066,21 @@ func _close_throne() -> void:
 		throne_mode = "between"
 		_enter_board()
 		return
+	if throne_mode == "day":
+		throne_mode = "between"
+		_clear_overlay()
+		state = "day"
+		_capture_mouse()
+		return
 	_start_attempt()
+
+
+## T in the city: manage skills and the loadout by day (the clock stops while you think).
+func open_throne_from_day() -> void:
+	if state != "day" or is_instance_valid(overlay):
+		return
+	throne_mode = "day"
+	_open_throne()
 
 
 # =============================================================================

@@ -3,8 +3,13 @@ extends RefCounted
 ## glowing runes, curved sabres, geared axes, halberds and a plasma edge. Used for the blade in your
 ## hand by day, on Hennik's racks, on tavern walls, and stuck in a stump at the Burned Farm.
 ##
-## build(id, length): the grip is at the origin and the blade points along -Z. `length` is the
+## build(id, length, level): the grip is at the origin and the blade points along -Z. `length` is the
 ## whole weapon's length in local units (about 0.5 in your hand, 1.0+ in the world).
+## LEVEL (0..3, bought with Crowns in the inventory) reshapes the blade:
+##   I   ETCHED     a glowing rune channel down the blade and a gem in the pommel
+##   II  AWAKENED   burning edges, a winged guard and a ring of aether around the hilt
+##   III ASCENDED   shards that orbit the blade (child "Orbit", spun by whoever holds it) and an aura
+## Every weapon has a child marker "Tip" at its point (used for swing trails).
 
 const Fx := preload("res://scripts/fx.gd")
 const Dialogue := preload("res://scripts/dialogue.gd")
@@ -67,6 +72,12 @@ static func build(id: String, length: float, tune: int = 0) -> Node3D:
 		_:
 			_hilt(root, L, W, leather, wrap, gold, iron, rune, glow)
 			_blade(root, L, str(W["kind"]), id, steel, edge, dark, rune, glow)
+	_upgrades(root, L, W, tune, col)
+	var tipm := Marker3D.new()
+	tipm.name = "Tip"
+	var reach_z := {"axe": 0.92, "halberd": 1.55}
+	tipm.position = Vector3(0, 0, -L * float(reach_z.get(str(W["kind"]), 0.98)))
+	root.add_child(tipm)
 	if glow >= 2.5:
 		var l := OmniLight3D.new()
 		l.light_color = col
@@ -75,6 +86,99 @@ static func build(id: String, length: float, tune: int = 0) -> Node3D:
 		l.position = Vector3(0, 0, -L * 0.6)
 		root.add_child(l)
 	return root
+
+
+## Upgrade parts, layered on top of any blade.
+static func _upgrades(root: Node3D, L: float, W: Dictionary, level: int, col: Color) -> void:
+	if level <= 0:
+		return
+	var kind := str(W["kind"])
+	var z0 := -L * (0.25 if kind in ["sword", "sabre", "great", "plasma"] else 0.7)
+	var z1 := -L * (0.92 if kind != "halberd" else 1.45)
+	var bright := col.lightened(0.35)
+	var rune := Fx.mat(bright, 4.0 + level)
+	var th := L * 0.02
+	# I: a rune channel down the middle of the blade, and a pommel gem
+	var n := 6
+	for k in n:
+		var z := lerpf(z0, z1, (k + 0.5) / n)
+		root.add_child(Fx.box(Vector3(L * 0.018, th * 1.4, L * 0.04), rune, Vector3(0, 0, z)))
+	root.add_child(Fx.box(Vector3.ONE * L * 0.05, Fx.mat(bright, 6.0), Vector3(0, 0, L * 0.16)))
+	if level >= 2:
+		# II: burning edges and a winged guard
+		var edge := Fx.mat(bright, 6.0, 0.85)
+		for s in [-1.0, 1.0]:
+			root.add_child(Fx.box(Vector3(L * 0.008, th * 0.8, absf(z1 - z0)), edge, Vector3(s * L * 0.04, 0, (z0 + z1) * 0.5)))
+			var wing := Fx.box(Vector3(L * 0.14, L * 0.02, L * 0.035), Fx.mat(col.darkened(0.2), 1.5), Vector3(s * L * 0.18, 0, -L * 0.13))
+			wing.rotation.y = s * 0.6
+			root.add_child(wing)
+			root.add_child(Fx.box(Vector3.ONE * L * 0.028, rune, Vector3(s * L * 0.25, 0, -L * 0.17)))
+		var ring := TorusMesh.new()
+		ring.inner_radius = L * 0.07
+		ring.outer_radius = L * 0.085
+		ring.rings = 12
+		ring.ring_segments = 4
+		var rm := MeshInstance3D.new()
+		rm.mesh = ring
+		rm.material_override = Fx.mat(bright, 4.0, 0.8)
+		rm.position = Vector3(0, 0, -L * 0.2)
+		rm.rotation.x = PI / 2.0
+		root.add_child(rm)
+	if level >= 3:
+		# III: orbiting shards and an aura of motes rising off the blade
+		var orbit := Node3D.new()
+		orbit.name = "Orbit"
+		orbit.position = Vector3(0, 0, (z0 + z1) * 0.5)
+		root.add_child(orbit)
+		for k in 3:
+			var a := TAU * k / 3.0
+			var shard := Fx.box(Vector3(L * 0.025, L * 0.025, L * 0.09), Fx.mat(bright, 7.0), Vector3(cos(a) * L * 0.12, sin(a) * L * 0.12, 0))
+			shard.rotation.z = a
+			orbit.add_child(shard)
+		var aura := Fx.particles(bright, 18, 0.7, 0.15, L * 0.02)
+		aura.gravity = Vector3(0, 0.3, 0)
+		aura.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+		aura.emission_box_extents = Vector3(L * 0.03, L * 0.02, absf(z1 - z0) * 0.5)
+		aura.position = Vector3(0, 0, (z0 + z1) * 0.5)
+		aura.local_coords = true
+		root.add_child(aura)
+		var l3 := OmniLight3D.new()
+		l3.light_color = bright
+		l3.omni_range = L * 2.5
+		l3.light_energy = 0.8
+		l3.position = Vector3(0, 0, (z0 + z1) * 0.5)
+		root.add_child(l3)
+
+
+const LEVEL_NAMES := ["", "ETCHED", "AWAKENED", "ASCENDED"]
+
+# How each blade cuts (boss.gd SWINGS) and sounds.
+const STYLE := {
+	"shortsword": "slash", "borrowed": "diagonal", "falchion": "backhand", "runeblade": "overhead",
+	"cogaxe": "chop", "greatsword": "sweep", "arcbrand": "thrust2", "lionfang": "flourish",
+	"halberd": "lunge_sweep", "sunedge": "rising",
+}
+const STYLE_NAMES := {
+	"slash": "QUICK SLASH, FOREHAND THEN BACKHAND", "diagonal": "YOUR FATHER'S DIAGONAL CUT", "backhand": "BACKHAND FLICK",
+	"overhead": "OVERHEAD CLEAVE", "chop": "WOUND-UP CHOP", "sweep": "WIDE SWEEP", "thrust2": "DOUBLE THRUST",
+	"flourish": "TWIRL AND RISING CUT", "lunge_sweep": "LUNGE, THEN SWEEP", "rising": "RISING PLASMA ARC",
+}
+
+
+static func swing_style(id: String) -> String:
+	return STYLE.get(id, "diagonal")
+
+
+static func swing_sound(id: String) -> String:
+	var W: Dictionary = Dialogue.WEAPONS.get(id, Dialogue.WEAPONS["shortsword"])
+	match str(W["kind"]):
+		"axe", "great", "halberd":
+			return "swing_heavy"
+		"plasma":
+			return "swing_plasma"
+	if float(W["glow"]) >= 2.5:
+		return "swing_arc"
+	return "swing_light"
 
 
 static func _haft(root: Node3D, len_h: float, leather: Material, wrap: Material, iron: Material) -> void:

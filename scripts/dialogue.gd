@@ -107,6 +107,31 @@ const STRANGER_NIGHT := [
 		"\"I've watched every move you've made. Every night. Every habit. Let's see if you can surprise yourself.\""],
 ]
 
+# What you can ask him at dusk, night by night: [question, his answer] x2, then how you start the game.
+const STRANGER_CHAT := [
+	[["Who are you?", "\"Someone who's been where you are. Further, maybe. Sit with me a while.\""],
+		["Why are you following me?", "\"I'm not following. I'm arriving. There's a difference, if you're early enough.\""],
+		"Let's play."],
+	[["How did you find me?", "\"You always end the day facing west, toward the Flagon. I just wait in the sunset.\""],
+		["What is this game?", "\"Your life, laid out where you can see it. Most men never get to look.\""],
+		"Let's play."],
+	[["Your robe is grey.", "\"It picks up whatever you put down. You've put down a lot this week. Good.\""],
+		["Were you at the bridge?", "\"Everyone was at the bridge.\" He smiles. \"You more than most.\""],
+		"Let's play."],
+	[["Your hands...", "\"Thorns, yes. They were yours. Don't apologise. I offered.\""],
+		["Why do you lose on purpose?", "\"Do I? Look at your hands. Then look at mine. Who's losing?\""],
+		"Let's play."],
+	[["Take off the hood.", "\"Tonight. At the table. I want you sitting down for it.\""],
+		["Who are you, really?", "\"You know. You've known since the bridge. You just haven't said it out loud.\""],
+		"Let's play."],
+	[["Does it hurt, carrying it?", "\"Every night. It is still lighter than it was on you.\""],
+		["What happens when it's all on you?", "\"On me. On you. Then there's only one of us left to carry it, and he'll be strong enough.\""],
+		"Let's play."],
+	[["Do we have to fight?", "\"You have to choose. Fighting is just how we've always chosen.\""],
+		["What if I win?", "\"Then you walk out whole.\" A pause. \"What if I win? Then you'll have learned something.\""],
+		"Let's end this."],
+]
+
 const REVEAL := "You see it now. Behind the hood is your face: the one you had before the crown. His hands are your hands, the way they were when you took the throne: veined, thorned, shackled.\n\nHe is you. The part of you that is pure enough to carry the rot away, night after night, so that you could wake up a little cleaner. That is how he finds you at every dusk, wherever you are: he never left.\n\n\"Took you long enough,\" he says, in your voice."
 
 

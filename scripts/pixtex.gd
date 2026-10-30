@@ -37,7 +37,55 @@ static func mat(tex: Texture2D, metres: float = 2.0, world: bool = true, tint: C
 	m.uv1_world_triplanar = world
 	m.uv1_scale = Vector3.ONE / metres
 	m.roughness = 1.0
+	# Depth: a pixel normal map baked from the texture itself, so mortar lines, cobble gaps,
+	# shingle edges and planks catch the light and throw tiny shadows.
+	var nm := normal_map(tex)
+	if nm:
+		m.normal_enabled = true
+		m.normal_texture = nm
+		m.normal_scale = 0.9
 	return m
+
+
+static var _normals := {}
+
+
+## A normal map from the brightness of a pixel texture (dark = low, light = high), crisp per pixel.
+static func normal_map(tex: Texture2D) -> ImageTexture:
+	if not (tex is ImageTexture):
+		return null
+	var id := tex.get_instance_id()
+	if _normals.has(id):
+		return _normals[id]
+	var src := tex.get_image()
+	if src == null:
+		return null
+	src = src.duplicate()
+	if src.is_compressed():
+		return null
+	if src.has_mipmaps():
+		src.clear_mipmaps()
+	var w := src.get_width()
+	var h := src.get_height()
+	var out := Image.create_empty(w, h, true, Image.FORMAT_RGB8)
+	var hgt := PackedFloat32Array()
+	hgt.resize(w * h)
+	for y in h:
+		for x in w:
+			hgt[y * w + x] = src.get_pixel(x, y).get_luminance()
+	var strength := 3.0
+	for y in h:
+		for x in w:
+			var l := hgt[y * w + posmod(x - 1, w)]
+			var r := hgt[y * w + posmod(x + 1, w)]
+			var u := hgt[posmod(y - 1, h) * w + x]
+			var d := hgt[posmod(y + 1, h) * w + x]
+			var n := Vector3((l - r) * strength, (u - d) * strength, 1.0).normalized()
+			out.set_pixel(x, y, Color(n.x * 0.5 + 0.5, n.y * 0.5 + 0.5, n.z * 0.5 + 0.5))
+	out.generate_mipmaps()
+	var nt := ImageTexture.create_from_image(out)
+	_normals[id] = nt
+	return nt
 
 
 ## A material for a decal quad (a face, a belt, an emblem): the texture fills the quad exactly.
